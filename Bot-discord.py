@@ -14,22 +14,21 @@ OLX_CLIENT_ID = os.getenv("OLX_CLIENT_ID", "203013")
 OLX_CLIENT_SECRET = os.getenv("OLX_CLIENT_SECRET", "SPqxrdxWxZBErpr4BKC31TudsW2Zhp2yNTqnkriF6OSTEXaR")
 REDIRECT_URI = "https://olx-discord-bot-ppys.onrender.com/callback"
 
-# Сховище для 3 акаунтів (за бажанням зміни назви магазинів)
 ACCOUNTS = {
     "1": {"name": "Магазин 1 (Основний)", "access_token": None, "refresh_token": None},
     "2": {"name": "Магазин 2", "access_token": None, "refresh_token": None},
     "3": {"name": "Магазин 3", "access_token": None, "refresh_token": None}
 }
 
+# Зберігаємо ID вже оброблених повідомлень, щоб не було дублів
 processed_message_ids = set()
 
-# --- 1. ВЕБ-СЕРВЕР ТА МУЛЬТИ-АВТОРИЗАЦІЯ ---
+# --- 1. ВЕБ-СЕРВЕР ТА АВТОРИЗАЦІЯ ---
 async def handle_ping(request):
     status_lines = [f"• {acc['name']}: {'🟢 Підключено' if acc['access_token'] else '⚪ Очікує входу'}" for acc in ACCOUNTS.values()]
     return web.Response(text="OLX Discord Bot is online!\n\nСтатус підключення акаунтів:\n" + "\n".join(status_lines))
 
 async def handle_auth(request):
-    # Визначаємо, який саме акаунт авторизуємо (за замовчуванням 1)
     acc_id = request.query.get("acc", "1")
     if acc_id not in ACCOUNTS:
         return web.Response(text="Невідомий номер акаунта. Доступні: 1, 2, 3", status=400)
@@ -85,7 +84,7 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix='!', intents=intents)
 
-# --- 3. ОПИТУВАННЯ ВСІХ ТРЬОХ АКАУНТІВ ---
+# --- 3. ОПИТУВАННЯ АКАУНТІВ ---
 @tasks.loop(seconds=30)
 async def olx_checker_task():
     async with ClientSession() as session:
@@ -100,7 +99,6 @@ async def olx_checker_task():
             }
 
             try:
-                # 1. Отримуємо діалоги акаунта
                 async with session.get("https://www.olx.ua/api/partner/threads", headers=headers) as resp:
                     if resp.status != 200:
                         continue
@@ -110,7 +108,6 @@ async def olx_checker_task():
                 for thread in threads:
                     thread_id = thread.get("id")
 
-                    # 2. Отримуємо повідомлення у гілці
                     async with session.get(f"https://www.olx.ua/api/partner/threads/{thread_id}/messages", headers=headers) as msg_resp:
                         if msg_resp.status != 200:
                             continue
@@ -123,14 +120,17 @@ async def olx_checker_task():
                     last_msg = messages[-1]
                     msg_id = last_msg.get("id")
                     msg_type = last_msg.get("type", "")
+                    is_author = last_msg.get("is_author", False)
 
-                    # Фільтр: ігноруємо системні оформлення OLX Доставка без листування
+                    # Ігноруємо системні повідомлення доставки
                     if msg_type in ["order", "delivery_order", "system"]:
                         continue
 
-                    if msg_id in processed_message_ids or last_msg.get("is_author"):
+                    # Якщо це повідомлення вже обробляли або його написали ВИ (а не клієнт) - пропускаємо
+                    if msg_id in processed_message_ids or is_author:
                         continue
 
+                    # Фіксуємо, що це повідомлення опрацьовано
                     processed_message_ids.add(msg_id)
                     msg_text = last_msg.get("text", "")
 
@@ -143,7 +143,7 @@ async def olx_checker_task():
                     found_trigger = next((w for w in triggers if w in msg_text.lower()), None)
                     auto_reply_text = "Вітаю! Дякуємо за замовлення. Відправка сьогодні о 16:00."
 
-                    # Автовідповідь у конкретний діалог
+                    # Якщо спрацював тригер — надсилаємо автовідповідь покупцю в OLX
                     if found_trigger:
                         await session.post(
                             f"https://www.olx.ua/api/partner/threads/{thread_id}/messages",
@@ -151,7 +151,7 @@ async def olx_checker_task():
                             json={"text": auto_reply_text}
                         )
 
-                    # Сповіщення в Discord
+                    # Формуємо картку для Discord із чітким розділенням
                     new_channel = bot.get_channel(NEW_ORDERS_CHANNEL_ID)
                     if new_channel:
                         embed = discord.Embed(
@@ -162,11 +162,16 @@ async def olx_checker_task():
                             timestamp=datetime.now(timezone.utc)
                         )
                         embed.add_field(name="🏪 Ваш акаунт", value=f"**{acc_data['name']}**", inline=False)
+                        
                         if found_trigger:
                             embed.add_field(name="⚠️ Увага (Тригер)", value=f"Спрацювало на: *{found_trigger}*", inline=False)
-                        embed.add_field(name="💬 Клієнт пише", value=f"> {msg_text}", inline=False)
+                        
+                        # Чітко розділено: що написав клієнт і що відповів бот/ви
+                        embed.add_field(name="👤 Написав клієнт", value=f"> {msg_text}", inline=False)
+                        
                         if found_trigger:
-                            embed.add_field(name="🤖 Автовідповідач надіслав", value=f"> {auto_reply_text}", inline=False)
+                            embed.add_field(name="🤖 Автоматична відповідь магазину", value=f"> {auto_reply_text}", inline=False)
+                            
                         embed.set_footer(text="OLX Manager Bot")
                         await new_channel.send(embed=embed)
 
