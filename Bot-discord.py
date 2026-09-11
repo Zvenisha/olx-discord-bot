@@ -20,7 +20,7 @@ ACCOUNTS = {
     "3": {"name": "Магазин 3", "access_token": None, "refresh_token": None}
 }
 
-# Зберігаємо ID вже оброблених повідомлень, щоб не було дублів
+# Зберігаємо ID вже оброблених повідомлень, щоб не дублювати сповіщення
 processed_message_ids = set()
 
 # --- 1. ВЕБ-СЕРВЕР ТА АВТОРИЗАЦІЯ ---
@@ -84,7 +84,7 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix='!', intents=intents)
 
-# --- 3. ОПИТУВАННЯ АКАУНТІВ ---
+# --- 3. ОПИТУВАННЯ АКАУНТІВ (БЕЗ АВТОВІДПОВІДАЧА) ---
 @tasks.loop(seconds=30)
 async def olx_checker_task():
     async with ClientSession() as session:
@@ -126,32 +126,23 @@ async def olx_checker_task():
                     if msg_type in ["order", "delivery_order", "system"]:
                         continue
 
-                    # Якщо це повідомлення вже обробляли або його написали ВИ (а не клієнт) - пропускаємо
+                    # Якщо це повідомлення вже обробляли або його написав ти (is_author=True) — ігноруємо
                     if msg_id in processed_message_ids or is_author:
                         continue
 
-                    # Фіксуємо, що це повідомлення опрацьовано
+                    # Запам'ятовуємо ID, щоб більше ніколи його не чіпати
                     processed_message_ids.add(msg_id)
                     msg_text = last_msg.get("text", "")
 
-                    # Тригери
+                    # Пошук тригерів (тільки для підсвічування в Discord)
                     triggers = [
                         "замов", "оплат", "відправ", "наявн", "ціна",
                         "картк", "реквізит", "наложк", "післяплат",
                         "пошт", "доставк", "актуальн", "знижк"
                     ]
                     found_trigger = next((w for w in triggers if w in msg_text.lower()), None)
-                    auto_reply_text = "Вітаю! Дякуємо за замовлення. Відправка сьогодні о 16:00."
 
-                    # Якщо спрацював тригер — надсилаємо автовідповідь покупцю в OLX
-                    if found_trigger:
-                        await session.post(
-                            f"https://www.olx.ua/api/partner/threads/{thread_id}/messages",
-                            headers=headers,
-                            json={"text": auto_reply_text}
-                        )
-
-                    # Формуємо картку для Discord із чітким розділенням
+                    # Надсилаємо сповіщення в Discord (жодних запитів на відправку повідомлень в OLX немає)
                     new_channel = bot.get_channel(NEW_ORDERS_CHANNEL_ID)
                     if new_channel:
                         embed = discord.Embed(
@@ -166,11 +157,7 @@ async def olx_checker_task():
                         if found_trigger:
                             embed.add_field(name="⚠️ Увага (Тригер)", value=f"Спрацювало на: *{found_trigger}*", inline=False)
                         
-                        # Чітко розділено: що написав клієнт і що відповів бот/ви
                         embed.add_field(name="👤 Написав клієнт", value=f"> {msg_text}", inline=False)
-                        
-                        if found_trigger:
-                            embed.add_field(name="🤖 Автоматична відповідь магазину", value=f"> {auto_reply_text}", inline=False)
                             
                         embed.set_footer(text="OLX Manager Bot")
                         await new_channel.send(embed=embed)
@@ -206,4 +193,4 @@ async def on_ready():
     if not olx_checker_task.is_running():
         olx_checker_task.start()
 
-bot.run(os.getenv('DISCORD_TOKEN'))
+bot.run(os.getenv('DISOURCE_TOKEN') or os.getenv('DISCORD_TOKEN'))
