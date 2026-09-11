@@ -22,7 +22,7 @@ ACCOUNTS = {
 
 processed_message_ids = set()
 is_initialized = False
-advert_cache = {}  # Кеш для назв та фото товарів, щоб не робити зайвих запитів
+advert_cache = {}
 
 # --- 1. ВЕБ-СЕРВЕР ТА АВТОРИЗАЦІЯ ---
 async def handle_ping(request):
@@ -89,7 +89,7 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix='!', intents=intents)
 
-# --- 3. ОПИТУВАННЯ АКАУНТІВ З ОТРИМАННЯМ ТОВАРУ ЗА ADVERT_ID ---
+# --- 3. ОПИТУВАННЯ АКАУНТІВ ---
 @tasks.loop(seconds=30)
 async def olx_checker_task():
     global is_initialized
@@ -115,7 +115,6 @@ async def olx_checker_task():
                     thread_id = thread.get("id")
                     advert_id = thread.get("advert_id")
 
-                    # Отримуємо назву та фото товару за advert_id (з кешу або через API запит)
                     ad_title = "Оголошення OLX"
                     ad_image_url = None
 
@@ -128,9 +127,19 @@ async def olx_checker_task():
                                     ad_json = await ad_resp.json()
                                     ad_data = ad_json.get("data", {})
                                     ad_title = ad_data.get("title", "Оголошення OLX")
+                                    
                                     photos = ad_data.get("photos", [])
                                     if photos and isinstance(photos, list):
-                                        ad_image_url = photos[0].get("link")
+                                        first_photo = photos[0]
+                                        if isinstance(first_photo, dict):
+                                            # Перевіряємо всі можливі ключі посилань на фото
+                                            ad_image_url = (
+                                                first_photo.get("link") or 
+                                                first_photo.get("url") or 
+                                                first_photo.get("large") or
+                                                first_photo.get("normal")
+                                            )
+                                    
                                     advert_cache[advert_id] = (ad_title, ad_image_url)
 
                     async with session.get(f"https://www.olx.ua/api/partner/threads/{thread_id}/messages", headers=headers) as msg_resp:
@@ -150,7 +159,6 @@ async def olx_checker_task():
                         processed_message_ids.add(msg_id)
                         continue
 
-                    # Фільтруємо власні повідомлення (тільки type == "received")
                     if msg_type != "received":
                         processed_message_ids.add(msg_id)
                         continue
@@ -164,7 +172,7 @@ async def olx_checker_task():
                     triggers = [
                         "замов", "оплат", "відправ", "наявн", "ціна",
                         "картк", "реквізит", "наложк", "післяплат",
-                        "пошт", "доставк", "актуальن", "знижк"
+                        "пошт", "доставк", "актуальн", "знижк"
                     ]
                     found_trigger = next((w for w in triggers if w in msg_text.lower()), None)
 
