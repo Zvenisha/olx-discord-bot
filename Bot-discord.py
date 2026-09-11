@@ -15,9 +15,9 @@ OLX_CLIENT_SECRET = os.getenv("OLX_CLIENT_SECRET", "SPqxrdxWxZBErpr4BKC31TudsW2Z
 REDIRECT_URI = "https://olx-discord-bot-ppys.onrender.com/callback"
 
 ACCOUNTS = {
-    "1": {"name": "Магазин 1 (Основний)", "access_token": None, "refresh_token": None, "user_id": None},
-    "2": {"name": "Магазин 2", "access_token": None, "refresh_token": None, "user_id": None},
-    "3": {"name": "Магазин 3", "access_token": None, "refresh_token": None, "user_id": None}
+    "1": {"name": "Магазин 1 (Основний)", "access_token": None, "refresh_token": None},
+    "2": {"name": "Магазин 2", "access_token": None, "refresh_token": None},
+    "3": {"name": "Магазин 3", "access_token": None, "refresh_token": None}
 }
 
 processed_message_ids = set()
@@ -65,12 +65,6 @@ async def handle_callback(request):
                 ACCOUNTS[acc_id]["access_token"] = access_token
                 ACCOUNTS[acc_id]["refresh_token"] = data.get("refresh_token")
                 
-                headers = {"Authorization": f"Bearer {access_token}", "Version": "2.0"}
-                async with session.get("https://www.olx.ua/api/partner/users/me", headers=headers) as user_resp:
-                    if user_resp.status == 200:
-                        user_json = await user_resp.json()
-                        ACCOUNTS[acc_id]["user_id"] = user_json.get("data", {}).get("id")
-
                 acc_name = ACCOUNTS[acc_id]["name"]
                 return web.Response(text=f"✅ Успішно! {acc_name} підключено до бота.")
             else:
@@ -92,7 +86,7 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix='!', intents=intents)
 
-# --- 3. ОПИТУВАННЯ АКАУНТІВ ---
+# --- 3. ОПИТУВАННЯ АКАУНТІВ ІЗ ТОЧНИМ ФІЛЬТРОМ ---
 @tasks.loop(seconds=30)
 async def olx_checker_task():
     global is_initialized
@@ -108,14 +102,6 @@ async def olx_checker_task():
             }
 
             try:
-                if not acc_data.get("user_id"):
-                    async with session.get("https://www.olx.ua/api/partner/users/me", headers=headers) as user_resp:
-                        if user_resp.status == 200:
-                            user_json = await user_resp.json()
-                            acc_data["user_id"] = user_json.get("data", {}).get("id")
-
-                my_user_id = acc_data.get("user_id")
-
                 async with session.get("https://www.olx.ua/api/partner/threads", headers=headers) as resp:
                     if resp.status != 200:
                         continue
@@ -137,38 +123,25 @@ async def olx_checker_task():
                     last_msg = messages[-1]
                     msg_id = last_msg.get("id")
                     msg_type = last_msg.get("type", "")
-                    
-                    # Логування структури для аналізу в Render
-                    print(f"OLX MESSAGE DATA: {last_msg}")
 
+                    # Якщо це перший запуск — просто заносуємо поточні повідомлення в пам'ять, щоб не було спаму
                     if not is_initialized:
                         processed_message_ids.add(msg_id)
                         continue
 
-                    if msg_type in ["order", "delivery_order", "system"]:
+                    # ГОЛОВНИЙ ФІЛЬТР: якщо це не вхідне від клієнта (наприклад, type == "sent"), одразу пропускаємо!
+                    if msg_type != "received":
                         processed_message_ids.add(msg_id)
                         continue
 
-                    is_author = last_msg.get("is_author", False)
-                    sender_id = last_msg.get("user_id") or last_msg.get("sender_id")
-                    direction = last_msg.get("direction", "")
-
-                    is_mine = (
-                        is_author or 
-                        (my_user_id and sender_id and str(sender_id) == str(my_user_id)) or
-                        direction in ["out", "outgoing", "sent"]
-                    )
-
-                    if is_mine:
-                        processed_message_ids.add(msg_id)
-                        continue
-
+                    # Якщо повідомлення вже обробляли раніше — пропускаємо
                     if msg_id in processed_message_ids:
                         continue
 
                     processed_message_ids.add(msg_id)
                     msg_text = last_msg.get("text", "")
 
+                    # Пошук тригерів для підсвічування
                     triggers = [
                         "замов", "оплат", "відправ", "наявн", "ціна",
                         "картк", "реквізит", "наложк", "післяплат",
@@ -176,6 +149,7 @@ async def olx_checker_task():
                     ]
                     found_trigger = next((w for w in triggers if w in msg_text.lower()), None)
 
+                    # Надсилаємо сповіщення у Discord виключно для реальних вхідних повідомлень
                     new_channel = bot.get_channel(NEW_ORDERS_CHANNEL_ID)
                     if new_channel:
                         embed = discord.Embed(
@@ -200,7 +174,7 @@ async def olx_checker_task():
 
         if not is_initialized:
             is_initialized = True
-            print("Бот ініціалізований.")
+            print("Бот ініціалізований та готовий до роботи.")
 
 # --- 4. АВТО-АРХІВАЦІЯ (ЧЕРЕЗ 2 ГОДИНИ) ---
 @tasks.loop(hours=1)
@@ -210,7 +184,6 @@ async def auto_archive_task():
     if not new_channel or not archive_channel:
         return
 
-    # Змінено з 24 годин на 2 години
     cutoff_time = datetime.now(timezone.utc) - timedelta(hours=2)
     async for message in new_channel.history(limit=100):
         if message.author == bot.user and message.created_at < cutoff_time:
