@@ -21,7 +21,7 @@ ACCOUNTS = {
 }
 
 processed_message_ids = set()
-is_initialized = False  # Прапорець для запобігання спаму старою історією при старті
+is_initialized = False
 
 # --- 1. ВЕБ-СЕРВЕР ТА АВТОРИЗАЦІЯ ---
 async def handle_ping(request):
@@ -92,7 +92,7 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix='!', intents=intents)
 
-# --- 3. ОПИТУВАННЯ АКАУНТІВ ІЗ ЗАХИСТОМ ВІД ІСТОРІЇ ---
+# --- 3. ОПИТУВАННЯ АКАУНТІВ ---
 @tasks.loop(seconds=30)
 async def olx_checker_task():
     global is_initialized
@@ -137,31 +137,38 @@ async def olx_checker_task():
                     last_msg = messages[-1]
                     msg_id = last_msg.get("id")
                     msg_type = last_msg.get("type", "")
-                    sender_id = last_msg.get("user_id")
-                    is_author = last_msg.get("is_author", False)
+                    
+                    # Логування структури для аналізу в Render
+                    print(f"OLX MESSAGE DATA: {last_msg}")
 
-                    # Якщо це перший запуск після перезавантаження — просто запам'ятовуємо поточні повідомлення і нічого не шлемо в Discord
                     if not is_initialized:
                         processed_message_ids.add(msg_id)
                         continue
 
-                    # Ігноруємо системні повідомлення доставки
                     if msg_type in ["order", "delivery_order", "system"]:
-                        continue
-
-                    # Фільтр від своїх же повідомлень (по ID та через флаг is_author)
-                    if (my_user_id and sender_id == my_user_id) or is_author:
                         processed_message_ids.add(msg_id)
                         continue
 
-                    # Якщо повідомлення вже обробляли — пропускаємо
+                    is_author = last_msg.get("is_author", False)
+                    sender_id = last_msg.get("user_id") or last_msg.get("sender_id")
+                    direction = last_msg.get("direction", "")
+
+                    is_mine = (
+                        is_author or 
+                        (my_user_id and sender_id and str(sender_id) == str(my_user_id)) or
+                        direction in ["out", "outgoing", "sent"]
+                    )
+
+                    if is_mine:
+                        processed_message_ids.add(msg_id)
+                        continue
+
                     if msg_id in processed_message_ids:
                         continue
 
                     processed_message_ids.add(msg_id)
                     msg_text = last_msg.get("text", "")
 
-                    # Тригери для підсвічування
                     triggers = [
                         "замов", "оплат", "відправ", "наявн", "ціна",
                         "картк", "реквізит", "наложк", "післяплат",
@@ -169,7 +176,6 @@ async def olx_checker_task():
                     ]
                     found_trigger = next((w for w in triggers if w in msg_text.lower()), None)
 
-                    # Надсилаємо сповіщення у Discord тільки для реальних нових повідомлень клієнта
                     new_channel = bot.get_channel(NEW_ORDERS_CHANNEL_ID)
                     if new_channel:
                         embed = discord.Embed(
@@ -192,12 +198,11 @@ async def olx_checker_task():
             except Exception as e:
                 print(f"Помилка опитування для {acc_data['name']}: {e}")
 
-        # Після першого повного кола сканування перемикаємо прапорец у True
         if not is_initialized:
             is_initialized = True
-            print("Бот успішно проініціалізовано, історія заблокована від спаму.")
+            print("Бот ініціалізований.")
 
-# --- 4. АВТО-АРХІВАЦІЯ (РАЗ НА ГОДИНУ) ---
+# --- 4. АВТО-АРХІВАЦІЯ (ЧЕРЕЗ 2 ГОДИНИ) ---
 @tasks.loop(hours=1)
 async def auto_archive_task():
     new_channel = bot.get_channel(NEW_ORDERS_CHANNEL_ID)
@@ -205,12 +210,13 @@ async def auto_archive_task():
     if not new_channel or not archive_channel:
         return
 
-    cutoff_time = datetime.now(timezone.utc) - timedelta(days=1)
+    # Змінено з 24 годин на 2 години
+    cutoff_time = datetime.now(timezone.utc) - timedelta(hours=2)
     async for message in new_channel.history(limit=100):
         if message.author == bot.user and message.created_at < cutoff_time:
             if message.embeds:
                 await archive_channel.send(
-                    content="📦 *Повідомлення перенесено в архів (минуло понад 24 години)*",
+                    content="📦 *Повідомлення перенесено в архів (минуло понад 2 години)*",
                     embed=message.embeds[0]
                 )
             await message.delete()
