@@ -21,6 +21,7 @@ ACCOUNTS = {
 }
 
 processed_message_ids = set()
+is_initialized = False  # Прапорець для запобігання спаму старою історією при старті
 
 # --- 1. ВЕБ-СЕРВЕР ТА АВТОРИЗАЦІЯ ---
 async def handle_ping(request):
@@ -64,7 +65,6 @@ async def handle_callback(request):
                 ACCOUNTS[acc_id]["access_token"] = access_token
                 ACCOUNTS[acc_id]["refresh_token"] = data.get("refresh_token")
                 
-                # Одразу отримуємо власний user_id цього акаунта для точної фільтрації
                 headers = {"Authorization": f"Bearer {access_token}", "Version": "2.0"}
                 async with session.get("https://www.olx.ua/api/partner/users/me", headers=headers) as user_resp:
                     if user_resp.status == 200:
@@ -92,9 +92,10 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix='!', intents=intents)
 
-# --- 3. ОПИТУВАННЯ АКАУНТІВ З ТОЧНИМ ФІЛЬТРОМ АВТОРА ---
+# --- 3. ОПИТУВАННЯ АКАУНТІВ ІЗ ЗАХИСТОМ ВІД ІСТОРІЇ ---
 @tasks.loop(seconds=30)
 async def olx_checker_task():
+    global is_initialized
     async with ClientSession() as session:
         for acc_id, acc_data in ACCOUNTS.items():
             token = acc_data.get("access_token")
@@ -107,7 +108,6 @@ async def olx_checker_task():
             }
 
             try:
-                # Якщо ще не зберегли власний ID акаунта — запитуємо його
                 if not acc_data.get("user_id"):
                     async with session.get("https://www.olx.ua/api/partner/users/me", headers=headers) as user_resp:
                         if user_resp.status == 200:
@@ -138,23 +138,30 @@ async def olx_checker_task():
                     msg_id = last_msg.get("id")
                     msg_type = last_msg.get("type", "")
                     sender_id = last_msg.get("user_id")
+                    is_author = last_msg.get("is_author", False)
+
+                    # Якщо це перший запуск після перезавантаження — просто запам'ятовуємо поточні повідомлення і нічого не шлемо в Discord
+                    if not is_initialized:
+                        processed_message_ids.add(msg_id)
+                        continue
 
                     # Ігноруємо системні повідомлення доставки
                     if msg_type in ["order", "delivery_order", "system"]:
                         continue
 
-                    # СТРОГИЙ ФІЛЬТР: якщо повідомлення відправлене нами (швидке порівняння ID) — ігноруємо
-                    if my_user_id and sender_id == my_user_id:
+                    # Фільтр від своїх же повідомлень (по ID та через флаг is_author)
+                    if (my_user_id and sender_id == my_user_id) or is_author:
+                        processed_message_ids.add(msg_id)
                         continue
 
-                    # Якщо це повідомлення вже обробляли раніше — пропускаємо
+                    # Якщо повідомлення вже обробляли — пропускаємо
                     if msg_id in processed_message_ids:
                         continue
 
                     processed_message_ids.add(msg_id)
                     msg_text = last_msg.get("text", "")
 
-                    # Пошук тригерів для підсвічування
+                    # Тригери для підсвічування
                     triggers = [
                         "замов", "оплат", "відправ", "наявн", "ціна",
                         "картк", "реквізит", "наложк", "післяплат",
@@ -162,7 +169,7 @@ async def olx_checker_task():
                     ]
                     found_trigger = next((w for w in triggers if w in msg_text.lower()), None)
 
-                    # Надсилаємо сповіщення в Discord тільки для вхідних від клієнтів
+                    # Надсилаємо сповіщення у Discord тільки для реальних нових повідомлень клієнта
                     new_channel = bot.get_channel(NEW_ORDERS_CHANNEL_ID)
                     if new_channel:
                         embed = discord.Embed(
@@ -184,6 +191,11 @@ async def olx_checker_task():
 
             except Exception as e:
                 print(f"Помилка опитування для {acc_data['name']}: {e}")
+
+        # Після першого повного кола сканування перемикаємо прапорец у True
+        if not is_initialized:
+            is_initialized = True
+            print("Бот успішно проініціалізовано, історія заблокована від спаму.")
 
 # --- 4. АВТО-АРХІВАЦІЯ (РАЗ НА ГОДИНУ) ---
 @tasks.loop(hours=1)
@@ -213,4 +225,4 @@ async def on_ready():
     if not olx_checker_task.is_running():
         olx_checker_task.start()
 
-bot.run(os.getenv('DISCORD_TOKEN'))
+bot.run(os.getenv('DISOURCE_TOKEN') or os.getenv('DISCORD_TOKEN'))
