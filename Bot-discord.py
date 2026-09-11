@@ -22,6 +22,7 @@ ACCOUNTS = {
 
 processed_message_ids = set()
 is_initialized = False
+advert_cache = {}  # Повертаємо кеш для економії запитів до API
 
 # --- 1. ВЕБ-СЕРВЕР ТА АВТОРИЗАЦІЯ ---
 async def handle_ping(request):
@@ -119,33 +120,28 @@ async def olx_checker_task():
                     ad_url = f"https://www.olx.ua/d/obyavlenie/-ID{advert_id}.html" if advert_id else "https://www.olx.ua/"
 
                     if advert_id:
-                        # Завжди робимо запит до API, щоб логувати структуру в реальному часі
-                        async with session.get(f"https://www.olx.ua/api/partner/adverts/{advert_id}", headers=headers) as ad_resp:
-                            if ad_resp.status == 200:
-                                ad_json = await ad_resp.json()
-                                ad_data = ad_json.get("data", {})
-                                
-                                # ПРИМУСОВИЙ ВИВІД ЛОГІВ ДЛЯ ОГОЛОШЕННЯ
-                                print(f"ADVERT DATA: {ad_data}", flush=True)
-
-                                ad_title = ad_data.get("title", "Оголошення OLX")
-                                api_url = ad_data.get("url") or ad_data.get("link")
-                                if api_url:
-                                    ad_url = api_url
-                                
-                                photos = ad_data.get("photos", [])
-                                if photos and isinstance(photos, list):
-                                    first_photo = photos[0]
-                                    if isinstance(first_photo, dict):
-                                        ad_image_url = (
-                                            first_photo.get("link") or 
-                                            first_photo.get("url") or 
-                                            first_photo.get("large") or
-                                            first_photo.get("normal") or
-                                            first_photo.get("small")
-                                        )
-                                    elif isinstance(first_photo, str):
-                                        ad_image_url = first_photo
+                        # Використовуємо кеш для економії лімітів API
+                        if advert_id in advert_cache:
+                            ad_title, ad_image_url, ad_url = advert_cache[advert_id]
+                        else:
+                            async with session.get(f"https://www.olx.ua/api/partner/adverts/{advert_id}", headers=headers) as ad_resp:
+                                if ad_resp.status == 200:
+                                    ad_json = await ad_resp.json()
+                                    ad_data = ad_json.get("data", {})
+                                    
+                                    ad_title = ad_data.get("title", "Оголошення OLX")
+                                    api_url = ad_data.get("url")
+                                    if api_url:
+                                        ad_url = api_url
+                                    
+                                    # Витягуємо фото з поля 'images' за ключем 'url'
+                                    images = ad_data.get("images", [])
+                                    if images and isinstance(images, list):
+                                        first_img = images[0]
+                                        if isinstance(first_img, dict):
+                                            ad_image_url = first_img.get("url")
+                                    
+                                    advert_cache[advert_id] = (ad_title, ad_image_url, ad_url)
 
                     async with session.get(f"https://www.olx.ua/api/partner/threads/{thread_id}/messages", headers=headers) as msg_resp:
                         if msg_resp.status != 200:
@@ -164,6 +160,7 @@ async def olx_checker_task():
                         processed_message_ids.add(msg_id)
                         continue
 
+                    # Фільтруємо власні повідомлення (беремо тільки вхідні від клієнтів)
                     if msg_type != "received":
                         processed_message_ids.add(msg_id)
                         continue
@@ -185,13 +182,14 @@ async def olx_checker_task():
                     if new_channel:
                         embed = discord.Embed(
                             title=f"📦 {ad_title}",
-                            url=ad_url,
+                            url=ad_url,  # Пряме посилання на товар
                             description="Отримано нове вхідне звернення від клієнта.",
                             color=0x00FF00 if found_trigger else 0x3498db,
                             timestamp=datetime.now(timezone.utc)
                         )
                         embed.add_field(name="🏪 Ваш акаунт", value=f"**{acc_data['name']}**", inline=False)
                         
+                        # Додаємо фотографію товару в ембед
                         if ad_image_url:
                             embed.set_image(url=ad_image_url)
 
