@@ -14,19 +14,20 @@ OLX_CLIENT_ID = os.getenv("OLX_CLIENT_ID", "203013")
 OLX_CLIENT_SECRET = os.getenv("OLX_CLIENT_SECRET", "SPqxrdxWxZBErpr4BKC31TudsW2Zhp2yNTqnkriF6OSTEXaR")
 REDIRECT_URI = "https://olx-discord-bot-ppys.onrender.com/callback"
 
+# Пошти тепер підтягуються автоматично, тут залишаються лише назви магазинів
 ACCOUNTS = {
-    "1": {"name": "Магазин 1 (Основний)", "access_token": None, "refresh_token": None},
-    "2": {"name": "Магазин 2", "access_token": None, "refresh_token": None},
-    "3": {"name": "Магазин 3", "access_token": None, "refresh_token": None}
+    "1": {"name": "Магазин 1", "email": "Очікує входу...", "access_token": None, "refresh_token": None},
+    "2": {"name": "Магазин 2", "email": "Очікує входу...", "access_token": None, "refresh_token": None},
+    "3": {"name": "Магазин 3", "email": "Очікує входу...", "access_token": None, "refresh_token": None}
 }
 
 processed_message_ids = set()
 is_initialized = False
-advert_cache = {}  # Повертаємо кеш для економії запитів до API
+advert_cache = {}
 
 # --- 1. ВЕБ-СЕРВЕР ТА АВТОРИЗАЦІЯ ---
 async def handle_ping(request):
-    status_lines = [f"• {acc['name']}: {'🟢 Підключено' if acc['access_token'] else '⚪ Очікує входу'}" for acc in ACCOUNTS.values()]
+    status_lines = [f"• {acc['name']} ({acc['email']}): {'🟢 Підключено' if acc['access_token'] else '⚪ Очікує входу'}" for acc in ACCOUNTS.values()]
     return web.Response(text="OLX Discord Bot is online!\n\nСтатус підключення акаунтів:\n" + "\n".join(status_lines))
 
 async def handle_auth(request):
@@ -66,9 +67,19 @@ async def handle_callback(request):
                 ACCOUNTS[acc_id]["access_token"] = access_token
                 ACCOUNTS[acc_id]["refresh_token"] = data.get("refresh_token")
                 
+                # Автоматично робимо запит до профілю OLX, щоб дізнатися пошту акаунта
+                headers = {"Authorization": f"Bearer {access_token}", "Version": "2.0"}
+                async with session.get("https://www.olx.ua/api/partner/users/me", headers=headers) as user_resp:
+                    if user_resp.status == 200:
+                        user_data = await user_resp.json()
+                        email = user_data.get("data", {}).get("email")
+                        if email:
+                            ACCOUNTS[acc_id]["email"] = email
+
                 acc_name = ACCOUNTS[acc_id]["name"]
-                print(f"Успішно авторизовано: {acc_name}", flush=True)
-                return web.Response(text=f"✅ Успішно! {acc_name} підключено до бота.")
+                acc_email = ACCOUNTS[acc_id]["email"]
+                print(f"Успішно авторизовано: {acc_name} ({acc_email})", flush=True)
+                return web.Response(text=f"✅ Успішно! {acc_name} ({acc_email}) підключено до бота.")
             else:
                 print(f"Помилка авторизації для акка {acc_id}: {data}", flush=True)
                 return web.Response(text=f"Помилка авторизації: {data}", status=400)
@@ -88,6 +99,15 @@ async def start_web_server():
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix='!', intents=intents)
+
+# Команда для повного очищення каналу нових повідомлень (!del або !видалити)
+@bot.command(name='del', aliases=['видалити'])
+async def clear_new_orders(ctx):
+    if ctx.channel.id == NEW_ORDERS_CHANNEL_ID:
+        await ctx.channel.purge(limit=100)
+        await ctx.send("🗑️ Канал нових замовлень повністю очищено!", delete_after=3)
+    else:
+        await ctx.send("Цю команду можна використовувати лише в каналі нових замовлень!", delete_after=3)
 
 # --- 3. ОПИТУВАННЯ АКАУНТІВ ---
 @tasks.loop(seconds=30)
@@ -120,7 +140,6 @@ async def olx_checker_task():
                     ad_url = f"https://www.olx.ua/d/obyavlenie/-ID{advert_id}.html" if advert_id else "https://www.olx.ua/"
 
                     if advert_id:
-                        # Використовуємо кеш для економії лімітів API
                         if advert_id in advert_cache:
                             ad_title, ad_image_url, ad_url = advert_cache[advert_id]
                         else:
@@ -134,7 +153,6 @@ async def olx_checker_task():
                                     if api_url:
                                         ad_url = api_url
                                     
-                                    # Витягуємо фото з поля 'images' за ключем 'url'
                                     images = ad_data.get("images", [])
                                     if images and isinstance(images, list):
                                         first_img = images[0]
@@ -155,12 +173,12 @@ async def olx_checker_task():
                     last_msg = messages[-1]
                     msg_id = last_msg.get("id")
                     msg_type = last_msg.get("type", "")
+                    msg_time = last_msg.get("created_at", "Невідомо")
 
                     if not is_initialized:
                         processed_message_ids.add(msg_id)
                         continue
 
-                    # Фільтруємо власні повідомлення (беремо тільки вхідні від клієнтів)
                     if msg_type != "received":
                         processed_message_ids.add(msg_id)
                         continue
@@ -182,14 +200,18 @@ async def olx_checker_task():
                     if new_channel:
                         embed = discord.Embed(
                             title=f"📦 {ad_title}",
-                            url=ad_url,  # Пряме посилання на товар
+                            url=ad_url,
                             description="Отримано нове вхідне звернення від клієнта.",
                             color=0x00FF00 if found_trigger else 0x3498db,
                             timestamp=datetime.now(timezone.utc)
                         )
-                        embed.add_field(name="🏪 Ваш акаунт", value=f"**{acc_data['name']}**", inline=False)
                         
-                        # Додаємо фотографію товару в ембед
+                        # Автоматично підставляється пошта, отримана з API
+                        account_info = f"**{acc_data['name']}**\n📧 `{acc_data['email']}`"
+                        embed.add_field(name="🏪 Ваш акаунт", value=account_info, inline=False)
+                        
+                        embed.add_field(name="⏱️ Час на OLX", value=msg_time, inline=True)
+
                         if ad_image_url:
                             embed.set_image(url=ad_image_url)
 
@@ -208,22 +230,28 @@ async def olx_checker_task():
             is_initialized = True
             print("Бот ініціалізований та готовий до роботи.", flush=True)
 
-# --- 4. АВТО-АРХІВАЦІЯ (ЧЕРЕЗ 2 ГОДИНИ) ---
-@tasks.loop(hours=1)
+# --- 4. АВТО-АРХІВАЦІЯ ТА ОЧИЩЕННЯ (20 хвилин / 5 годин) ---
+@tasks.loop(minutes=5)
 async def auto_archive_task():
     new_channel = bot.get_channel(NEW_ORDERS_CHANNEL_ID)
     archive_channel = bot.get_channel(ARCHIVE_CHANNEL_ID)
     if not new_channel or not archive_channel:
         return
 
-    cutoff_time = datetime.now(timezone.utc) - timedelta(hours=2)
+    cutoff_archive = datetime.now(timezone.utc) - timedelta(minutes=20)
+    cutoff_delete = datetime.now(timezone.utc) - timedelta(hours=5)
+
     async for message in new_channel.history(limit=100):
-        if message.author == bot.user and message.created_at < cutoff_time:
+        if message.author == bot.user and message.created_at < cutoff_archive:
             if message.embeds:
                 await archive_channel.send(
-                    content="📦 *Повідомлення перенесено в архів (минуло понад 2 години)*",
+                    content="📦 *Повідомлення перенесено в архів (минуло 20 хвилин)*",
                     embed=message.embeds[0]
                 )
+            await message.delete()
+
+    async for message in archive_channel.history(limit=100):
+        if message.author == bot.user and message.created_at < cutoff_delete:
             await message.delete()
 
 # --- 5. ЗАПУСК ---
