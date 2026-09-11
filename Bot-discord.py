@@ -66,8 +66,10 @@ async def handle_callback(request):
                 ACCOUNTS[acc_id]["refresh_token"] = data.get("refresh_token")
                 
                 acc_name = ACCOUNTS[acc_id]["name"]
+                print(f"Успішно авторизовано: {acc_name}")
                 return web.Response(text=f"✅ Успішно! {acc_name} підключено до бота.")
             else:
+                print(f"Помилка авторизації для акка {acc_id}: {data}")
                 return web.Response(text=f"Помилка авторизації: {data}", status=400)
 
 async def start_web_server():
@@ -86,7 +88,7 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix='!', intents=intents)
 
-# --- 3. ОПИТУВАННЯ АКАУНТІВ З ДЕБАГОМ ТРЕДІВ ---
+# --- 3. ОПИТУВАННЯ АКАУНТІВ ---
 @tasks.loop(seconds=30)
 async def olx_checker_task():
     global is_initialized
@@ -111,10 +113,9 @@ async def olx_checker_task():
                 for thread in threads:
                     thread_id = thread.get("id")
                     
-                    # ДЕБАГ: виводимо повну структуру треду в логи Render
+                    # ДЕБАГ: виводимо повну структуру треду для аналізу фото і назви
                     print(f"OLX THREAD DATA: {thread}")
 
-                    # Спробуємо дістати дані оголошення
                     advert = thread.get("advert", {})
                     ad_title = advert.get("title") or thread.get("title") or "Оголошення OLX"
                     photos = advert.get("photos", []) or thread.get("photos", [])
@@ -137,6 +138,7 @@ async def olx_checker_task():
                         processed_message_ids.add(msg_id)
                         continue
 
+                    # Фільтруємо власні повідомлення (беремо тільки вхідні від клієнтів)
                     if msg_type != "received":
                         processed_message_ids.add(msg_id)
                         continue
