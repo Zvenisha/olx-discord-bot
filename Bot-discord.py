@@ -86,7 +86,7 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix='!', intents=intents)
 
-# --- 3. ОПИТУВАННЯ АКАУНТІВ ІЗ ТОЧНИМ ФІЛЬТРОМ ---
+# --- 3. ОПИТУВАННЯ АКАУНТІВ З ВИДОБУТКОМ ФОТО ТА НАЗВИ ---
 @tasks.loop(seconds=30)
 async def olx_checker_task():
     global is_initialized
@@ -110,6 +110,12 @@ async def olx_checker_task():
                 threads = threads_data.get("data", [])
                 for thread in threads:
                     thread_id = thread.get("id")
+                    
+                    # Витягуємо інформацію про товар (оголошення) з треду
+                    advert = thread.get("advert", {})
+                    ad_title = advert.get("title", "Оголошення OLX")
+                    photos = advert.get("photos", [])
+                    ad_image_url = photos[0].get("link") if photos and isinstance(photos, list) else None
 
                     async with session.get(f"https://www.olx.ua/api/partner/threads/{thread_id}/messages", headers=headers) as msg_resp:
                         if msg_resp.status != 200:
@@ -124,12 +130,12 @@ async def olx_checker_task():
                     msg_id = last_msg.get("id")
                     msg_type = last_msg.get("type", "")
 
-                    # Якщо це перший запуск — просто заносуємо поточні повідомлення в пам'ять, щоб не було спаму
+                    # Якщо це перший запуск — заносуємо в пам'ять і не спамимо
                     if not is_initialized:
                         processed_message_ids.add(msg_id)
                         continue
 
-                    # ГОЛОВНИЙ ФІЛЬТР: якщо це не вхідне від клієнта (наприклад, type == "sent"), одразу пропускаємо!
+                    # Фільтр: обробляємо тільки вхідні від клієнтів (type == "received")
                     if msg_type != "received":
                         processed_message_ids.add(msg_id)
                         continue
@@ -141,7 +147,7 @@ async def olx_checker_task():
                     processed_message_ids.add(msg_id)
                     msg_text = last_msg.get("text", "")
 
-                    # Пошук тригерів для підсвічування
+                    # Тригери для підсвічування
                     triggers = [
                         "замов", "оплат", "відправ", "наявн", "ціна",
                         "картк", "реквізит", "наложк", "післяплат",
@@ -149,11 +155,11 @@ async def olx_checker_task():
                     ]
                     found_trigger = next((w for w in triggers if w in msg_text.lower()), None)
 
-                    # Надсилаємо сповіщення у Discord виключно для реальних вхідних повідомлень
+                    # Формуємо красиву картку в Discord із фото та назвою товару
                     new_channel = bot.get_channel(NEW_ORDERS_CHANNEL_ID)
                     if new_channel:
                         embed = discord.Embed(
-                            title="Нове повідомлення на OLX! 📩",
+                            title=f"📦 {ad_title}" if ad_title else "Нове повідомлення на OLX! 📩",
                             url="https://www.olx.ua/my/chat/",
                             description="Отримано нове вхідне звернення від клієнта.",
                             color=0x00FF00 if found_trigger else 0x3498db,
@@ -161,6 +167,10 @@ async def olx_checker_task():
                         )
                         embed.add_field(name="🏪 Ваш акаунт", value=f"**{acc_data['name']}**", inline=False)
                         
+                        # Додаємо фото оголошення, якщо воно є в API
+                        if ad_image_url:
+                            embed.set_image(url=ad_image_url)
+
                         if found_trigger:
                             embed.add_field(name="⚠️ Увага (Тригер)", value=f"Спрацювало на: *{found_trigger}*", inline=False)
                         
