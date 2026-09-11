@@ -117,30 +117,37 @@ async def olx_checker_task():
 
                     ad_title = "Оголошення OLX"
                     ad_image_url = None
+                    ad_url = "https://www.olx.ua/"
 
                     if advert_id:
                         if advert_id in advert_cache:
-                            ad_title, ad_image_url = advert_cache[advert_id]
+                            ad_title, ad_image_url, ad_url = advert_cache[advert_id]
                         else:
                             async with session.get(f"https://www.olx.ua/api/partner/adverts/{advert_id}", headers=headers) as ad_resp:
                                 if ad_resp.status == 200:
                                     ad_json = await ad_resp.json()
                                     ad_data = ad_json.get("data", {})
+                                    
+                                    # ДЕБАГ: виводимо структуру оголошення в логи
+                                    print(f"ADVERT DATA: {ad_data}", flush=True)
+
                                     ad_title = ad_data.get("title", "Оголошення OLX")
+                                    ad_url = ad_data.get("url") or f"https://www.olx.ua/d/obyavlenie/-I{advert_id}.html"
                                     
                                     photos = ad_data.get("photos", [])
                                     if photos and isinstance(photos, list):
                                         first_photo = photos[0]
                                         if isinstance(first_photo, dict):
-                                            # Перевіряємо всі можливі ключі посилань на фото
                                             ad_image_url = (
                                                 first_photo.get("link") or 
                                                 first_photo.get("url") or 
                                                 first_photo.get("large") or
                                                 first_photo.get("normal")
                                             )
+                                        elif isinstance(first_photo, str):
+                                            ad_image_url = first_photo
                                     
-                                    advert_cache[advert_id] = (ad_title, ad_image_url)
+                                    advert_cache[advert_id] = (ad_title, ad_image_url, ad_url)
 
                     async with session.get(f"https://www.olx.ua/api/partner/threads/{thread_id}/messages", headers=headers) as msg_resp:
                         if msg_resp.status != 200:
@@ -180,7 +187,7 @@ async def olx_checker_task():
                     if new_channel:
                         embed = discord.Embed(
                             title=f"📦 {ad_title}",
-                            url="https://www.olx.ua/my/chat/",
+                            url=ad_url,  # Тепер тут пряме посилання на товар!
                             description="Отримано нове вхідне звернення від клієнта.",
                             color=0x00FF00 if found_trigger else 0x3498db,
                             timestamp=datetime.now(timezone.utc)
