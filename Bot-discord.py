@@ -22,6 +22,7 @@ ACCOUNTS = {
 
 processed_message_ids = set()
 is_initialized = False
+advert_cache = {}  # Кеш для назв та фото товарів, щоб не робити зайвих запитів
 
 # --- 1. ВЕБ-СЕРВЕР ТА АВТОРИЗАЦІЯ ---
 async def handle_ping(request):
@@ -88,7 +89,7 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix='!', intents=intents)
 
-# --- 3. ОПИТУВАННЯ АКАУНТІВ ---
+# --- 3. ОПИТУВАННЯ АКАУНТІВ З ОТРИМАННЯМ ТОВАРУ ЗА ADVERT_ID ---
 @tasks.loop(seconds=30)
 async def olx_checker_task():
     global is_initialized
@@ -112,14 +113,25 @@ async def olx_checker_task():
                 threads = threads_data.get("data", [])
                 for thread in threads:
                     thread_id = thread.get("id")
-                    
-                    # МИТТЄВИЙ ВИВІД ЛОГІВ ДЛЯ ТРЕДУ
-                    print(f"OLX THREAD DATA: {thread}", flush=True)
+                    advert_id = thread.get("advert_id")
 
-                    advert = thread.get("advert", {})
-                    ad_title = advert.get("title") or thread.get("title") or "Оголошення OLX"
-                    photos = advert.get("photos", []) or thread.get("photos", [])
-                    ad_image_url = photos[0].get("link") if photos and isinstance(photos, list) else None
+                    # Отримуємо назву та фото товару за advert_id (з кешу або через API запит)
+                    ad_title = "Оголошення OLX"
+                    ad_image_url = None
+
+                    if advert_id:
+                        if advert_id in advert_cache:
+                            ad_title, ad_image_url = advert_cache[advert_id]
+                        else:
+                            async with session.get(f"https://www.olx.ua/api/partner/adverts/{advert_id}", headers=headers) as ad_resp:
+                                if ad_resp.status == 200:
+                                    ad_json = await ad_resp.json()
+                                    ad_data = ad_json.get("data", {})
+                                    ad_title = ad_data.get("title", "Оголошення OLX")
+                                    photos = ad_data.get("photos", [])
+                                    if photos and isinstance(photos, list):
+                                        ad_image_url = photos[0].get("link")
+                                    advert_cache[advert_id] = (ad_title, ad_image_url)
 
                     async with session.get(f"https://www.olx.ua/api/partner/threads/{thread_id}/messages", headers=headers) as msg_resp:
                         if msg_resp.status != 200:
@@ -138,6 +150,7 @@ async def olx_checker_task():
                         processed_message_ids.add(msg_id)
                         continue
 
+                    # Фільтруємо власні повідомлення (тільки type == "received")
                     if msg_type != "received":
                         processed_message_ids.add(msg_id)
                         continue
@@ -151,7 +164,7 @@ async def olx_checker_task():
                     triggers = [
                         "замов", "оплат", "відправ", "наявн", "ціна",
                         "картк", "реквізит", "наложк", "післяплат",
-                        "пошт", "доставк", "актуальн", "знижк"
+                        "пошт", "доставк", "актуальن", "знижк"
                     ]
                     found_trigger = next((w for w in triggers if w in msg_text.lower()), None)
 
