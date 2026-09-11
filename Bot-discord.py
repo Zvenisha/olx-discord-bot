@@ -9,36 +9,45 @@ from discord.ext import commands, tasks
 NEW_ORDERS_CHANNEL_ID = 1546490061854351422
 ARCHIVE_CHANNEL_ID = 1546603811643334757
 
-# Дані OLX
+# Дані OLX API
 OLX_CLIENT_ID = os.getenv("OLX_CLIENT_ID", "203013")
 OLX_CLIENT_SECRET = os.getenv("OLX_CLIENT_SECRET", "SPqxrdxWxZBErpr4BKC31TudsW2Zhp2yNTqnkriF6OSTEXaR")
 REDIRECT_URI = "https://olx-discord-bot-ppys.onrender.com/callback"
 
-# Токени доступу OLX
-olx_tokens = {
-    "access_token": None,
-    "refresh_token": None
+# Сховище для 3 акаунтів (за бажанням зміни назви магазинів)
+ACCOUNTS = {
+    "1": {"name": "Магазин 1 (Основний)", "access_token": None, "refresh_token": None},
+    "2": {"name": "Магазин 2", "access_token": None, "refresh_token": None},
+    "3": {"name": "Магазин 3", "access_token": None, "refresh_token": None}
 }
+
 processed_message_ids = set()
 
-# --- 1. ВЕБ-СЕРВЕР (UPTIMEROBOT ТА АВТОРИЗАЦІЯ OAUTH) ---
+# --- 1. ВЕБ-СЕРВЕР ТА МУЛЬТИ-АВТОРИЗАЦІЯ ---
 async def handle_ping(request):
-    return web.Response(text="OLX Discord Bot is online!")
+    status_lines = [f"• {acc['name']}: {'🟢 Підключено' if acc['access_token'] else '⚪ Очікує входу'}" for acc in ACCOUNTS.values()]
+    return web.Response(text="OLX Discord Bot is online!\n\nСтатус підключення акаунтів:\n" + "\n".join(status_lines))
 
 async def handle_auth(request):
+    # Визначаємо, який саме акаунт авторизуємо (за замовчуванням 1)
+    acc_id = request.query.get("acc", "1")
+    if acc_id not in ACCOUNTS:
+        return web.Response(text="Невідомий номер акаунта. Доступні: 1, 2, 3", status=400)
+
     auth_url = (
         f"https://www.olx.ua/oauth/authorize/?"
         f"client_id={OLX_CLIENT_ID}&response_type=code&"
-        f"scope=read+write+v2&redirect_uri={REDIRECT_URI}"
+        f"scope=read+write+v2&redirect_uri={REDIRECT_URI}&state={acc_id}"
     )
     return web.HTTPFound(auth_url)
 
 async def handle_callback(request):
     code = request.query.get("code")
-    if not code:
-        return web.Response(text="Помилка: код авторизації не отримано.", status=400)
+    acc_id = request.query.get("state", "1")
 
-    # Обмін коду на Access Token
+    if not code:
+        return web.Response(text="Помилка: код авторизації не передано.", status=400)
+
     token_url = "https://www.olx.ua/api/open/oauth/token"
     payload = {
         "grant_type": "authorization_code",
@@ -52,12 +61,13 @@ async def handle_callback(request):
     async with ClientSession() as session:
         async with session.post(token_url, json=payload) as resp:
             data = await resp.json()
-            if "access_token" in data:
-                olx_tokens["access_token"] = data["access_token"]
-                olx_tokens["refresh_token"] = data.get("refresh_token")
-                return web.Response(text="✅ Авторизація OLX успішна! Бот підключений і збирає повідомлення.")
+            if "access_token" in data and acc_id in ACCOUNTS:
+                ACCOUNTS[acc_id]["access_token"] = data["access_token"]
+                ACCOUNTS[acc_id]["refresh_token"] = data.get("refresh_token")
+                acc_name = ACCOUNTS[acc_id]["name"]
+                return web.Response(text=f"✅ Успішно! {acc_name} підключено до бота.")
             else:
-                return web.Response(text=f"Помилка отримання токена: {data}", status=400)
+                return web.Response(text=f"Помилка авторизації: {data}", status=400)
 
 async def start_web_server():
     app = web.Application()
@@ -70,97 +80,98 @@ async def start_web_server():
     await site.start()
     print("Веб-сервер активний на порту 8080.")
 
-# --- 2. БОТ DISCORD ---
+# --- 2. DISCORD БОТ ---
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix='!', intents=intents)
 
-# --- 3. ФОНОВИЙ СКАНЕР OLX (ПОШУК НОВИХ ПОВІДОМЛЕНЬ) ---
+# --- 3. ОПИТУВАННЯ ВСІХ ТРЬОХ АКАУНТІВ ---
 @tasks.loop(seconds=30)
 async def olx_checker_task():
-    token = olx_tokens.get("access_token")
-    if not token:
-        return
-
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Version": "2.0"
-    }
-
     async with ClientSession() as session:
-        try:
-            # Отримуємо список діалогів
-            async with session.get("https://www.olx.ua/api/partner/threads", headers=headers) as resp:
-                if resp.status != 200:
-                    return
-                threads_data = await resp.json()
+        for acc_id, acc_data in ACCOUNTS.items():
+            token = acc_data.get("access_token")
+            if not token:
+                continue
 
-            threads = threads_data.get("data", [])
-            for thread in threads:
-                thread_id = thread.get("id")
-                # Запитуємо повідомлення в діалозі
-                async with session.get(f"https://www.olx.ua/api/partner/threads/{thread_id}/messages", headers=headers) as msg_resp:
-                    if msg_resp.status != 200:
+            headers = {
+                "Authorization": f"Bearer {token}",
+                "Version": "2.0"
+            }
+
+            try:
+                # 1. Отримуємо діалоги акаунта
+                async with session.get("https://www.olx.ua/api/partner/threads", headers=headers) as resp:
+                    if resp.status != 200:
                         continue
-                    messages_data = await msg_resp.json()
+                    threads_data = await resp.json()
 
-                messages = messages_data.get("data", [])
-                if not messages:
-                    continue
+                threads = threads_data.get("data", [])
+                for thread in threads:
+                    thread_id = thread.get("id")
 
-                last_msg = messages[-1]
-                msg_id = last_msg.get("id")
-                msg_type = last_msg.get("type", "")
+                    # 2. Отримуємо повідомлення у гілці
+                    async with session.get(f"https://www.olx.ua/api/partner/threads/{thread_id}/messages", headers=headers) as msg_resp:
+                        if msg_resp.status != 200:
+                            continue
+                        messages_data = await msg_resp.json()
 
-                # Фільтр: ігноруємо системні замовлення OLX Доставка без тексту
-                if msg_type in ["order", "delivery_order", "system"]:
-                    continue
+                    messages = messages_data.get("data", [])
+                    if not messages:
+                        continue
 
-                # Якщо повідомлення вже обробляли або воно від нас самих
-                if msg_id in processed_message_ids or last_msg.get("is_author"):
-                    continue
+                    last_msg = messages[-1]
+                    msg_id = last_msg.get("id")
+                    msg_type = last_msg.get("type", "")
 
-                processed_message_ids.add(msg_id)
-                msg_text = last_msg.get("text", "")
-                
-                # Аналіз тригерів
-                triggers = [
-                    "замов", "оплат", "відправ", "наявн", "ціна",
-                    "картк", "реквізит", "наложк", "післяплат",
-                    "пошт", "доставк", "актуальн", "знижк"
-                ]
-                found_trigger = next((word for word in triggers if word in msg_text.lower()), None)
-                auto_reply_text = "Вітаю! Дякуємо за замовлення. Відправка сьогодні о 16:00."
+                    # Фільтр: ігноруємо системні оформлення OLX Доставка без листування
+                    if msg_type in ["order", "delivery_order", "system"]:
+                        continue
 
-                # Автоматична відповідь в OLX
-                if found_trigger:
-                    reply_payload = {"text": auto_reply_text}
-                    await session.post(
-                        f"https://www.olx.ua/api/partner/threads/{thread_id}/messages",
-                        headers=headers,
-                        json=reply_payload
-                    )
+                    if msg_id in processed_message_ids or last_msg.get("is_author"):
+                        continue
 
-                # Відправка картки в Discord
-                new_channel = bot.get_channel(NEW_ORDERS_CHANNEL_ID)
-                if new_channel:
-                    embed = discord.Embed(
-                        title="Нове повідомлення на OLX! 📩",
-                        url=f"https://www.olx.ua/my/chat/",
-                        description="Отримано нове вхідне звернення від клієнта.",
-                        color=0x00FF00 if found_trigger else 0x3498db,
-                        timestamp=datetime.now(timezone.utc)
-                    )
+                    processed_message_ids.add(msg_id)
+                    msg_text = last_msg.get("text", "")
+
+                    # Тригери
+                    triggers = [
+                        "замов", "оплат", "відправ", "наявн", "ціна",
+                        "картк", "реквізит", "наложк", "післяплат",
+                        "пошт", "доставк", "актуальн", "знижк"
+                    ]
+                    found_trigger = next((w for w in triggers if w in msg_text.lower()), None)
+                    auto_reply_text = "Вітаю! Дякуємо за замовлення. Відправка сьогодні о 16:00."
+
+                    # Автовідповідь у конкретний діалог
                     if found_trigger:
-                        embed.add_field(name="⚠️ Увага (Тригер)", value=f"Спрацювало на: *{found_trigger}*", inline=False)
-                    embed.add_field(name="💬 Клієнт пише", value=f"> {msg_text}", inline=False)
-                    if found_trigger:
-                        embed.add_field(name="🤖 Автовідповідач надіслав", value=f"> {auto_reply_text}", inline=False)
-                    embed.set_footer(text="OLX Manager Bot")
-                    await new_channel.send(embed=embed)
+                        await session.post(
+                            f"https://www.olx.ua/api/partner/threads/{thread_id}/messages",
+                            headers=headers,
+                            json={"text": auto_reply_text}
+                        )
 
-        except Exception as e:
-            print(f"Помилка під час опитування OLX API: {e}")
+                    # Сповіщення в Discord
+                    new_channel = bot.get_channel(NEW_ORDERS_CHANNEL_ID)
+                    if new_channel:
+                        embed = discord.Embed(
+                            title="Нове повідомлення на OLX! 📩",
+                            url="https://www.olx.ua/my/chat/",
+                            description="Отримано нове вхідне звернення від клієнта.",
+                            color=0x00FF00 if found_trigger else 0x3498db,
+                            timestamp=datetime.now(timezone.utc)
+                        )
+                        embed.add_field(name="🏪 Ваш акаунт", value=f"**{acc_data['name']}**", inline=False)
+                        if found_trigger:
+                            embed.add_field(name="⚠️ Увага (Тригер)", value=f"Спрацювало на: *{found_trigger}*", inline=False)
+                        embed.add_field(name="💬 Клієнт пише", value=f"> {msg_text}", inline=False)
+                        if found_trigger:
+                            embed.add_field(name="🤖 Автовідповідач надіслав", value=f"> {auto_reply_text}", inline=False)
+                        embed.set_footer(text="OLX Manager Bot")
+                        await new_channel.send(embed=embed)
+
+            except Exception as e:
+                print(f"Помилка опитування для {acc_data['name']}: {e}")
 
 # --- 4. АВТО-АРХІВАЦІЯ (РАЗ НА ГОДИНУ) ---
 @tasks.loop(hours=1)
@@ -180,7 +191,7 @@ async def auto_archive_task():
                 )
             await message.delete()
 
-# --- 5. ЗАПУСК БОТА ---
+# --- 5. ЗАПУСК ---
 @bot.event
 async def on_ready():
     print(f'Бот {bot.user} активний!')
