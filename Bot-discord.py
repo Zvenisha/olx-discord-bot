@@ -117,7 +117,8 @@ async def olx_checker_task():
 
                     ad_title = "Оголошення OLX"
                     ad_image_url = None
-                    ad_url = "https://www.olx.ua/"
+                    # Примусово формуємо пряме посилання на оголошення за його ID
+                    ad_url = f"https://www.olx.ua/d/obyavlenie/-ID{advert_id}.html" if advert_id else "https://www.olx.ua/"
 
                     if advert_id:
                         if advert_id in advert_cache:
@@ -128,11 +129,12 @@ async def olx_checker_task():
                                     ad_json = await ad_resp.json()
                                     ad_data = ad_json.get("data", {})
                                     
-                                    # ДЕБАГ: виводимо структуру оголошення в логи
-                                    print(f"ADVERT DATA: {ad_data}", flush=True)
-
                                     ad_title = ad_data.get("title", "Оголошення OLX")
-                                    ad_url = ad_data.get("url") or f"https://www.olx.ua/d/obyavlenie/-I{advert_id}.html"
+                                    
+                                    # Якщо API дає гарне посилання, використовуємо його, інакше залишаємо наше сформоване
+                                    api_url = ad_data.get("url") or ad_data.get("link")
+                                    if api_url:
+                                        ad_url = api_url
                                     
                                     photos = ad_data.get("photos", [])
                                     if photos and isinstance(photos, list):
@@ -187,7 +189,7 @@ async def olx_checker_task():
                     if new_channel:
                         embed = discord.Embed(
                             title=f"📦 {ad_title}",
-                            url=ad_url,  # Тепер тут пряме посилання на товар!
+                            url=ad_url,  # Тепер тут гарантовано пряме посилання на товар
                             description="Отримано нове вхідне звернення від клієнта.",
                             color=0x00FF00 if found_trigger else 0x3498db,
                             timestamp=datetime.now(timezone.utc)
