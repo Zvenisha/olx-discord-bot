@@ -66,10 +66,10 @@ async def handle_callback(request):
                 ACCOUNTS[acc_id]["refresh_token"] = data.get("refresh_token")
                 
                 acc_name = ACCOUNTS[acc_id]["name"]
-                print(f"Успішно авторизовано: {acc_name}")
+                print(f"Успішно авторизовано: {acc_name}", flush=True)
                 return web.Response(text=f"✅ Успішно! {acc_name} підключено до бота.")
             else:
-                print(f"Помилка авторизації для акка {acc_id}: {data}")
+                print(f"Помилка авторизації для акка {acc_id}: {data}", flush=True)
                 return web.Response(text=f"Помилка авторизації: {data}", status=400)
 
 async def start_web_server():
@@ -81,7 +81,7 @@ async def start_web_server():
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", 8080)
     await site.start()
-    print("Веб-сервер активний на порту 8080.")
+    print("Веб-сервер активний на порту 8080.", flush=True)
 
 # --- 2. DISCORD БОТ ---
 intents = discord.Intents.default()
@@ -113,8 +113,8 @@ async def olx_checker_task():
                 for thread in threads:
                     thread_id = thread.get("id")
                     
-                    # ДЕБАГ: виводимо повну структуру треду для аналізу фото і назви
-                    print(f"OLX THREAD DATA: {thread}")
+                    # МИТТЄВИЙ ВИВІД ЛОГІВ ДЛЯ ТРЕДУ
+                    print(f"OLX THREAD DATA: {thread}", flush=True)
 
                     advert = thread.get("advert", {})
                     ad_title = advert.get("title") or thread.get("title") or "Оголошення OLX"
@@ -138,7 +138,6 @@ async def olx_checker_task():
                         processed_message_ids.add(msg_id)
                         continue
 
-                    # Фільтруємо власні повідомлення (беремо тільки вхідні від клієнтів)
                     if msg_type != "received":
                         processed_message_ids.add(msg_id)
                         continue
@@ -179,11 +178,11 @@ async def olx_checker_task():
                         await new_channel.send(embed=embed)
 
             except Exception as e:
-                print(f"Помилка опитування для {acc_data['name']}: {e}")
+                print(f"Помилка опитування для {acc_data['name']}: {e}", flush=True)
 
         if not is_initialized:
             is_initialized = True
-            print("Бот ініціалізований та готовий до роботи.")
+            print("Бот ініціалізований та готовий до роботи.", flush=True)
 
 # --- 4. АВТО-АРХІВАЦІЯ (ЧЕРЕЗ 2 ГОДИНИ) ---
 @tasks.loop(hours=1)
@@ -206,7 +205,7 @@ async def auto_archive_task():
 # --- 5. ЗАПУСК ---
 @bot.event
 async def on_ready():
-    print(f'Бот {bot.user} активний!')
+    print(f'Бот {bot.user} активний!', flush=True)
     bot.loop.create_task(start_web_server())
     if not auto_archive_task.is_running():
         auto_archive_task.start()
