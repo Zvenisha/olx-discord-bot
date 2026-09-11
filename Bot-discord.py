@@ -15,12 +15,11 @@ OLX_CLIENT_SECRET = os.getenv("OLX_CLIENT_SECRET", "SPqxrdxWxZBErpr4BKC31TudsW2Z
 REDIRECT_URI = "https://olx-discord-bot-ppys.onrender.com/callback"
 
 ACCOUNTS = {
-    "1": {"name": "Магазин 1 (Основний)", "access_token": None, "refresh_token": None},
-    "2": {"name": "Магазин 2", "access_token": None, "refresh_token": None},
-    "3": {"name": "Магазин 3", "access_token": None, "refresh_token": None}
+    "1": {"name": "Магазин 1 (Основний)", "access_token": None, "refresh_token": None, "user_id": None},
+    "2": {"name": "Магазин 2", "access_token": None, "refresh_token": None, "user_id": None},
+    "3": {"name": "Магазин 3", "access_token": None, "refresh_token": None, "user_id": None}
 }
 
-# Зберігаємо ID вже оброблених повідомлень, щоб не дублювати сповіщення
 processed_message_ids = set()
 
 # --- 1. ВЕБ-СЕРВЕР ТА АВТОРИЗАЦІЯ ---
@@ -61,8 +60,17 @@ async def handle_callback(request):
         async with session.post(token_url, json=payload) as resp:
             data = await resp.json()
             if "access_token" in data and acc_id in ACCOUNTS:
-                ACCOUNTS[acc_id]["access_token"] = data["access_token"]
+                access_token = data["access_token"]
+                ACCOUNTS[acc_id]["access_token"] = access_token
                 ACCOUNTS[acc_id]["refresh_token"] = data.get("refresh_token")
+                
+                # Одразу отримуємо власний user_id цього акаунта для точної фільтрації
+                headers = {"Authorization": f"Bearer {access_token}", "Version": "2.0"}
+                async with session.get("https://www.olx.ua/api/partner/users/me", headers=headers) as user_resp:
+                    if user_resp.status == 200:
+                        user_json = await user_resp.json()
+                        ACCOUNTS[acc_id]["user_id"] = user_json.get("data", {}).get("id")
+
                 acc_name = ACCOUNTS[acc_id]["name"]
                 return web.Response(text=f"✅ Успішно! {acc_name} підключено до бота.")
             else:
@@ -84,7 +92,7 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix='!', intents=intents)
 
-# --- 3. ОПИТУВАННЯ АКАУНТІВ (БЕЗ АВТОВІДПОВІДАЧА) ---
+# --- 3. ОПИТУВАННЯ АКАУНТІВ З ТОЧНИМ ФІЛЬТРОМ АВТОРА ---
 @tasks.loop(seconds=30)
 async def olx_checker_task():
     async with ClientSession() as session:
@@ -99,6 +107,15 @@ async def olx_checker_task():
             }
 
             try:
+                # Якщо ще не зберегли власний ID акаунта — запитуємо його
+                if not acc_data.get("user_id"):
+                    async with session.get("https://www.olx.ua/api/partner/users/me", headers=headers) as user_resp:
+                        if user_resp.status == 200:
+                            user_json = await user_resp.json()
+                            acc_data["user_id"] = user_json.get("data", {}).get("id")
+
+                my_user_id = acc_data.get("user_id")
+
                 async with session.get("https://www.olx.ua/api/partner/threads", headers=headers) as resp:
                     if resp.status != 200:
                         continue
@@ -120,21 +137,24 @@ async def olx_checker_task():
                     last_msg = messages[-1]
                     msg_id = last_msg.get("id")
                     msg_type = last_msg.get("type", "")
-                    is_author = last_msg.get("is_author", False)
+                    sender_id = last_msg.get("user_id")
 
                     # Ігноруємо системні повідомлення доставки
                     if msg_type in ["order", "delivery_order", "system"]:
                         continue
 
-                    # Якщо це повідомлення вже обробляли або його написав ти (is_author=True) — ігноруємо
-                    if msg_id in processed_message_ids or is_author:
+                    # СТРОГИЙ ФІЛЬТР: якщо повідомлення відправлене нами (швидке порівняння ID) — ігноруємо
+                    if my_user_id and sender_id == my_user_id:
                         continue
 
-                    # Запам'ятовуємо ID, щоб більше ніколи його не чіпати
+                    # Якщо це повідомлення вже обробляли раніше — пропускаємо
+                    if msg_id in processed_message_ids:
+                        continue
+
                     processed_message_ids.add(msg_id)
                     msg_text = last_msg.get("text", "")
 
-                    # Пошук тригерів (тільки для підсвічування в Discord)
+                    # Пошук тригерів для підсвічування
                     triggers = [
                         "замов", "оплат", "відправ", "наявн", "ціна",
                         "картк", "реквізит", "наложк", "післяплат",
@@ -142,7 +162,7 @@ async def olx_checker_task():
                     ]
                     found_trigger = next((w for w in triggers if w in msg_text.lower()), None)
 
-                    # Надсилаємо сповіщення в Discord (жодних запитів на відправку повідомлень в OLX немає)
+                    # Надсилаємо сповіщення в Discord тільки для вхідних від клієнтів
                     new_channel = bot.get_channel(NEW_ORDERS_CHANNEL_ID)
                     if new_channel:
                         embed = discord.Embed(
@@ -193,4 +213,4 @@ async def on_ready():
     if not olx_checker_task.is_running():
         olx_checker_task.start()
 
-bot.run(os.getenv('DISOURCE_TOKEN') or os.getenv('DISCORD_TOKEN'))
+bot.run(os.getenv('DISCORD_TOKEN'))
