@@ -1,0 +1,20 @@
+{
+    "1": {
+        "name": "Магазин 1",
+        "email": "totorikt@gmail.com",
+        "access_token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiIsImtpZCI6IjE3NzU2NDI2MTAifQ.eyJqdGkiOiIyMDMwMjItMTIzMzc2OTQ2LTE3ODkxNTUzMDkiLCJpc3MiOiJodHRwczovL3d3dy5vbHgudWEiLCJhdWQiOiJwYXJ0bmVyX2FwaSIsImlhdCI6MTc4OTE1NTMwOSwibmJmIjoxNzg5MTU1MzA5LCJleHAiOjE3ODkyNDE3MDksImNsaWVudF9pZCI6MjAzMDIyLCJzY29wZSI6InJlYWQgd3JpdGUgdjIiLCJ0b2tlbl91c2UiOiJhY2Nlc3MiLCJ0b2tlbl9vd25lciI6InVzZXIiLCJrdHkiOiJSU0EiLCJ1c2VyX2lkIjoxMjMzNzY5NDYsInVzZXJfdXVpZCI6IjI4YmI2ZTYyLTlkMmYtNDBhYy05ZDk0LTQxZWY5YjM2MGZhMiIsInN1YiI6IjI4YmI2ZTYyLTlkMmYtNDBhYy05ZDk0LTQxZWY5YjM2MGZhMiIsImlzX2J1c2luZXNzIjp0cnVlLCJjbGllbnRfdGllciI6IjAiLCJwYXJ0bmVyX2NvZGUiOiI0NjQwIn0.7Emf_SkQzbTKaqAzfkjE6xOfCnj3iR1OuXmuL5ZUe-LcTwKvZKX6Qz7yS3o7_Vm_BBlGvxwCPiHLurpXBoSxxnLSsgIyhy_29CjJyTBL8qb2D3HypGdjgVZAS3ZW7-MgrZtKv1P26hYFgEjHw2Ojpvs7_xdDycYJuqs768OOyzxmDZ-ZgdKiUe6VdDpqx50N3wbHVfbKkpBYOTiaR5XGWURY7ZiuYHQp0gM3tFtei4nxFjdGTJLGSKvulRHxVjCQLws1Zg2FudJ7Y1acK-tMt8SVeIaRL3JkoCCepqH5M5nPMnCipm7D5cn49dip6smIK10ds3OsO0DHuLWD10cqFA",
+        "refresh_token": "52fe1cf37d1dd0c463612c94a80ce26c0635e566"
+    },
+    "2": {
+        "name": "Магазин 2",
+        "email": "Очікує входу...",
+        "access_token": null,
+        "refresh_token": null
+    },
+    "3": {
+        "name": "Магазин 3",
+        "email": "Очікує входу...",
+        "access_token": null,
+        "refresh_token": null
+    }
+}
