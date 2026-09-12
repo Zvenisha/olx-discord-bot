@@ -13,8 +13,8 @@
     },
     "3": {
         "name": "Магазин 3",
-        "email": "Очікує входу...",
-        "access_token": null,
-        "refresh_token": null
+        "email": "svetlanaguk2205@gmail.com",
+        "access_token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiIsImtpZCI6IjE3NzU2NDI2MTAifQ.eyJqdGkiOiIyMDMwMjItMzEzNzMwODk3LTE3ODkxNTc0NjMiLCJpc3MiOiJodHRwczovL3d3dy5vbHgudWEiLCJhdWQiOiJwYXJ0bmVyX2FwaSIsImlhdCI6MTc4OTE1NzQ2MywibmJmIjoxNzg5MTU3NDYzLCJleHAiOjE3ODkyNDM4NjMsImNsaWVudF9pZCI6MjAzMDIyLCJzY29wZSI6InJlYWQgd3JpdGUgdjIiLCJ0b2tlbl91c2UiOiJhY2Nlc3MiLCJ0b2tlbl9vd25lciI6InVzZXIiLCJrdHkiOiJSU0EiLCJ1c2VyX2lkIjozMTM3MzA4OTcsInVzZXJfdXVpZCI6IjQwNWYyM2Q1LWQ4MjQtNDhhOS1hNzNhLTc5ZGY1NzgwODk2YSIsInN1YiI6IjQwNWYyM2Q1LWQ4MjQtNDhhOS1hNzNhLTc5ZGY1NzgwODk2YSIsImlzX2J1c2luZXNzIjp0cnVlLCJjbGllbnRfdGllciI6IjAiLCJwYXJ0bmVyX2NvZGUiOiI0NjQwIn0.wnLm-4ssIHwSMhO-ituvtE61NoDy4cd1qoDKpMNAt-FknRg_1U_pwJNdHXPxn3Ou6G-KsHXMd9Vby2HV6rjVoPuK_s58mD2f4GKtOeTYQQdn9ybkUup2yCDHbHFqx2NMMwvBbZz2wHK2LQ_UsfuPWv4RPGNYrcAK1DMrD8tJzy6DiHowzQ33ZdOt7NCF60bJHOkaHReNRksQrdSOjr8NnPy7dhpUgxGufoJZWtqr_zMyPYNULid_nCdCnlMBEztrMiP97eH0BQ6bDoHG0CKgj0YOP48K5phKsxPgsMrFRQC43gFDR_wIYy73bxH9skOqTux-SFyLRWVQ73LCcOSwwQ",
+        "refresh_token": "18fbf1485e56e689e14649c94bd4724c27f13235"
     }
 }
