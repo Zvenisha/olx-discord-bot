@@ -1,14 +1,11 @@
 import os
 import asyncio
 import json
-import zipfile
+import base64
 from datetime import datetime, timezone, timedelta
 from aiohttp import web, ClientSession
 import discord
 from discord.ext import commands, tasks
-from google.oauth2 import service_account
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
 
 # --- НАЛАШТУВАННЯ КАНАЛІВ DISCORD ---
 NEW_ORDERS_CHANNEL_ID = 1546490061854351422
@@ -30,17 +27,12 @@ processed_message_ids = set()
 is_initialized = False
 advert_cache = {}
 
-# --- GOOGLE DRIVE СИНХРОНІЗАЦІЯ СЕСІЙ (ТОКЕНІВ) ---
-FOLDER_ID = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
+# --- GITHUB СИНХРОНІЗАЦІЯ ТОКЕНІВ ---
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
+GITHUB_REPO = os.getenv("GITHUB_REPO")  # Наприклад: "Zvenisha/olx-discord-bot"
+FILE_PATH = "sessions/tokens.json"
 SESSION_DIR = "sessions"
 TOKENS_FILE = os.path.join(SESSION_DIR, "tokens.json")
-ARCHIVE_NAME = "discord_sessions.zip"
-
-def get_drive_service():
-    creds_json = json.loads(os.getenv("GOOGLE_SERVICE_ACCOUNT"))
-    scopes = ["https://www.googleapis.com/auth/drive.file"]
-    creds = service_account.Credentials.from_service_account_info(creds_json, scopes=scopes)
-    return build("drive", "v3", credentials=creds)
 
 def save_tokens_locally():
     if not os.path.exists(SESSION_DIR):
@@ -57,87 +49,84 @@ def load_tokens_locally():
                 for acc_id, data in saved_accounts.items():
                     if acc_id in ACCOUNTS:
                         ACCOUNTS[acc_id].update(data)
-            print("Дані акаунтів успішно відновлені з файлу!", flush=True)
+            print("Дані акаунтів успішно відновлені з локального файлу!", flush=True)
         except Exception as e:
             print(f"Помилка читання локальних токенів: {e}", flush=True)
 
-def restore_sessions_from_drive():
+async def restore_sessions_from_drive():
     try:
-        if not FOLDER_ID or not os.getenv("GOOGLE_SERVICE_ACCOUNT"):
-            print("Змінні середовища для Google Drive не налаштовані.", flush=True)
+        if not GITHUB_TOKEN or not GITHUB_REPO:
+            print("GitHub токен або репозиторій не налаштовані.", flush=True)
             return
         
-        drive = get_drive_service()
-        results = drive.files().list(
-            q=f"name='{ARCHIVE_NAME}' and '{FOLDER_ID}' in parents and trashed=false",
-            fields="files(id, name)"
-        ).execute()
-        files = results.get("files", [])
+        url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{FILE_PATH}"
+        headers = {
+            "Authorization": f"Bearer {GITHUB_TOKEN}",
+            "Accept": "application/vnd.github+json"
+        }
 
-        if not files:
-            print("Архів на Google Диску не знайдено. Потрібен новий вхід.", flush=True)
-            return
+        async with ClientSession() as session:
+            async with session.get(url, headers=headers) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    content_base64 = data.get("content", "")
+                    content_bytes = base64.b64decode(content_base64)
 
-        file_id = files[0]["id"]
-        request = drive.files().get_media(fileId=file_id)
+                    if not os.path.exists(SESSION_DIR):
+                        os.makedirs(SESSION_DIR)
+                    with open(TOKENS_FILE, "wb") as f:
+                        f.write(content_bytes)
 
-        with open(ARCHIVE_NAME, "wb") as f:
-            downloader = MediaIoBaseDownload(f, request)
-            done = False
-            while not done:
-                status, done = downloader.next_chunk()
-
-        with zipfile.ZipFile(ARCHIVE_NAME, "r") as zip_ref:
-            zip_ref.extractall(SESSION_DIR)
-        os.remove(ARCHIVE_NAME)
-        
-        load_tokens_locally()
-        print("Сесії успішно відновлені з Google Диска!", flush=True)
+                    load_tokens_locally()
+                    print("Токени успішно відновлені з GitHub репозиторію!", flush=True)
+                else:
+                    print("Файл токенів на GitHub ще не створено. Потрібен новий вхід.", flush=True)
     except Exception as e:
-        print(f"Помилка при відновленні сесій: {e}", flush=True)
+        print(f"Помилка при відновленні з GitHub: {e}", flush=True)
 
-def backup_sessions_to_drive():
+async def backup_sessions_to_drive():
     try:
-        print("Початок резервного копіювання на Google Диск...", flush=True)
-        if not FOLDER_ID or not os.getenv("GOOGLE_SERVICE_ACCOUNT"):
-            print("Помилка: змінні середовища Google Drive не знайдені в бекапі.", flush=True)
+        if not GITHUB_TOKEN or not GITHUB_REPO:
+            print("GitHub токен або репозиторій не налаштовані для бекапу.", flush=True)
             return
 
         save_tokens_locally()
-        if not os.path.exists(SESSION_DIR):
-            print("Помилка: локальна папка sessions не створена.", flush=True)
+        if not os.path.exists(TOKENS_FILE):
             return
 
-        drive = get_drive_service()
+        with open(TOKENS_FILE, "r", encoding="utf-8") as f:
+            file_content = f.read()
 
-        with zipfile.ZipFile(ARCHIVE_NAME, "w", zipfile.ZIP_DEFLATED) as zip_ref:
-            for foldername, subfolders, filenames in os.walk(SESSION_DIR):
-                for filename in filenames:
-                    filepath = os.path.join(foldername, filename)
-                    arcname = os.path.relpath(filepath, SESSION_DIR)
-                    zip_ref.write(filepath, arcname)
+        encoded_content = base64.b64encode(file_content.encode("utf-8")).decode("utf-8")
 
-        print("Архів успішно сформовано, надсилаємо на Google Диск...", flush=True)
-        results = drive.files().list(
-            q=f"name='{ARCHIVE_NAME}' and '{FOLDER_ID}' in parents and trashed=false",
-            fields="files(id, name)"
-        ).execute()
-        files = results.get("files", [])
+        url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{FILE_PATH}"
+        headers = {
+            "Authorization": f"Bearer {GITHUB_TOKEN}",
+            "Accept": "application/vnd.github+json"
+        }
 
-        media = MediaFileUpload(ARCHIVE_NAME, mimetype="application/zip")
-        file_metadata = {'name': ARCHIVE_NAME, 'parents': [FOLDER_ID]}
+        async with ClientSession() as session:
+            sha = None
+            async with session.get(url, headers=headers) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    sha = data.get("sha")
 
-        if files:
-            file_id = files[0]["id"]
-            drive.files().update(fileId=file_id, body=file_metadata, media_body=media).execute()
-            print("Архів сесій успішно оновлено на Google Диску!", flush=True)
-        else:
-            drive.files().create(body=file_metadata, media_body=media, fields='id').execute()
-            print("Архів сесій вперше успішно завантажено на Google Диск!", flush=True)
+            payload = {
+                "message": "Update tokens.json automatically",
+                "content": encoded_content
+            }
+            if sha:
+                payload["sha"] = sha
 
-        os.remove(ARCHIVE_NAME)
+            async with session.put(url, headers=headers, json=payload) as put_resp:
+                if put_resp.status in [200, 201]:
+                    print("Токени успішно збережені на GitHub!", flush=True)
+                else:
+                    err_text = await put_resp.text()
+                    print(f"Помилка збереження токенів на GitHub: {err_text}", flush=True)
     except Exception as e:
-        print(f"ПОМИЛКА при збереженні на Диск: {e}", flush=True)
+        print(f"ПОМИЛКА при збереженні на GitHub: {e}", flush=True)
 
 # --- 1. ВЕБ-СЕРВЕР ТА АВТОРИЗАЦІЯ ---
 async def handle_ping(request):
@@ -193,7 +182,7 @@ async def handle_callback(request):
                 acc_email = ACCOUNTS[acc_id]["email"]
                 print(f"Успішно авторизовано: {acc_name} ({acc_email})", flush=True)
                 
-                backup_sessions_to_drive()
+                await backup_sessions_to_drive()
                 
                 return web.Response(text=f"✅ Успішно! {acc_name} ({acc_email}) підключено до бота.")
             else:
@@ -373,7 +362,7 @@ async def auto_archive_task():
 async def on_ready():
     print(f'Бот {bot.user} активний!', flush=True)
     
-    restore_sessions_from_drive()
+    await restore_sessions_from_drive()
     
     bot.loop.create_task(start_web_server())
     if not auto_archive_task.is_running():
