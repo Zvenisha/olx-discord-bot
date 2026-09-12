@@ -7,9 +7,9 @@
     },
     "2": {
         "name": "Магазин 2",
-        "email": "Очікує входу...",
-        "access_token": null,
-        "refresh_token": null
+        "email": "rachkovskaya.ua@gmail.com",
+        "access_token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiIsImtpZCI6IjE3NzU2NDI2MTAifQ.eyJqdGkiOiIyMDMwMjItOTQyMTMxNTU1LTE3ODkxNTc0MTYiLCJpc3MiOiJodHRwczovL3d3dy5vbHgudWEiLCJhdWQiOiJwYXJ0bmVyX2FwaSIsImlhdCI6MTc4OTE1NzQxNiwibmJmIjoxNzg5MTU3NDE2LCJleHAiOjE3ODkyNDM4MTYsImNsaWVudF9pZCI6MjAzMDIyLCJzY29wZSI6InJlYWQgd3JpdGUgdjIiLCJ0b2tlbl91c2UiOiJhY2Nlc3MiLCJ0b2tlbl9vd25lciI6InVzZXIiLCJrdHkiOiJSU0EiLCJ1c2VyX2lkIjo5NDIxMzE1NTUsInVzZXJfdXVpZCI6IjBjMmZlZTM1LTY2YzUtNDc3OS05MGM5LWE4MjY3MWYxYmVlNyIsInN1YiI6IjBjMmZlZTM1LTY2YzUtNDc3OS05MGM5LWE4MjY3MWYxYmVlNyIsImlzX2J1c2luZXNzIjp0cnVlLCJjbGllbnRfdGllciI6IjAiLCJwYXJ0bmVyX2NvZGUiOiI0NjQwIn0.GK0ghAtqTVz7XcMv0_PS9hEzZYdz8YAnp56UF676VZPJx9d4hye-TUKNZnIYaJfkRMrYG1FvZlXPD5I5ii3oqF64oWSElQWLiel-LonTX5KVLs23dJEZSpTQoJBo1LGvvCFCi0JM35JNGlSMbjQ7TT1Up3iyXmAJjPXpreOdt--1cgWYW6FbO9sjVTUGq7mNmynp1QqZeMKNzQNe3LNewAjWJWt_SRpUh7j7AFjhv92GPN2k_5ZD1fxEoDyskL6TIFvLXYe8GKRl1UlS7Vsk3cEpZrpvKBwoOy-KTlOfdr_VwdyNpV9H5MFhxqWgP1GsxAft5-1chobtOJxYOZDymw",
+        "refresh_token": "dad50208fad0bede89c1b57393a506824b4587e1"
     },
     "3": {
         "name": "Магазин 3",
