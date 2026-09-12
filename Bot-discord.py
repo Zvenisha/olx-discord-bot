@@ -57,14 +57,14 @@ def load_tokens_locally():
                 for acc_id, data in saved_accounts.items():
                     if acc_id in ACCOUNTS:
                         ACCOUNTS[acc_id].update(data)
-            print("Дані акаунтів успішно відновлені з файлу!")
+            print("Дані акаунтів успішно відновлені з файлу!", flush=True)
         except Exception as e:
-            print(f"Помилка читання локальних токенів: {e}")
+            print(f"Помилка читання локальних токенів: {e}", flush=True)
 
 def restore_sessions_from_drive():
     try:
         if not FOLDER_ID or not os.getenv("GOOGLE_SERVICE_ACCOUNT"):
-            print("Змінні середовища для Google Drive не налаштовані.")
+            print("Змінні середовища для Google Drive не налаштовані.", flush=True)
             return
         
         drive = get_drive_service()
@@ -75,7 +75,7 @@ def restore_sessions_from_drive():
         files = results.get("files", [])
 
         if not files:
-            print("Архів на Google Диску не знайдено. Потрібен новий вхід.")
+            print("Архів на Google Диску не знайдено. Потрібен новий вхід.", flush=True)
             return
 
         file_id = files[0]["id"]
@@ -92,17 +92,20 @@ def restore_sessions_from_drive():
         os.remove(ARCHIVE_NAME)
         
         load_tokens_locally()
-        print("Сесії успішно відновлені з Google Диска!")
+        print("Сесії успішно відновлені з Google Диска!", flush=True)
     except Exception as e:
-        print(f"Помилка при відновленні сесій: {e}")
+        print(f"Помилка при відновленні сесій: {e}", flush=True)
 
 def backup_sessions_to_drive():
     try:
+        print("Початок резервного копіювання на Google Диск...", flush=True)
         if not FOLDER_ID or not os.getenv("GOOGLE_SERVICE_ACCOUNT"):
+            print("Помилка: змінні середовища Google Drive не знайдені в бекапі.", flush=True)
             return
 
         save_tokens_locally()
         if not os.path.exists(SESSION_DIR):
+            print("Помилка: локальна папка sessions не створена.", flush=True)
             return
 
         drive = get_drive_service()
@@ -114,6 +117,7 @@ def backup_sessions_to_drive():
                     arcname = os.path.relpath(filepath, SESSION_DIR)
                     zip_ref.write(filepath, arcname)
 
+        print("Архів успішно сформовано, надсилаємо на Google Диск...", flush=True)
         results = drive.files().list(
             q=f"name='{ARCHIVE_NAME}' and '{FOLDER_ID}' in parents and trashed=false",
             fields="files(id, name)"
@@ -126,14 +130,14 @@ def backup_sessions_to_drive():
         if files:
             file_id = files[0]["id"]
             drive.files().update(fileId=file_id, body=file_metadata, media_body=media).execute()
-            print("Архів сесій оновлено на Google Диску.")
+            print("Архів сесій успішно оновлено на Google Диску!", flush=True)
         else:
             drive.files().create(body=file_metadata, media_body=media, fields='id').execute()
-            print("Архів сесій вперше завантажено на Google Диск.")
+            print("Архів сесій вперше успішно завантажено на Google Диск!", flush=True)
 
         os.remove(ARCHIVE_NAME)
     except Exception as e:
-        print(f"Помилка при збереженні на Диск: {e}")
+        print(f"ПОМИЛКА при збереженні на Диск: {e}", flush=True)
 
 # --- 1. ВЕБ-СЕРВЕР ТА АВТОРИЗАЦІЯ ---
 async def handle_ping(request):
