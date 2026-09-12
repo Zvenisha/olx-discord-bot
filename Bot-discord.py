@@ -30,9 +30,10 @@ processed_message_ids = set()
 is_initialized = False
 advert_cache = {}
 
-# --- GOOGLE DRIVE СИНХРОНІЗАЦІЯ СЕСІЙ ---
+# --- GOOGLE DRIVE СИНХРОНІЗАЦІЯ СЕСІЙ (ТОКЕНІВ) ---
 FOLDER_ID = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
-SESSION_DIR = "sessions"  # Шлях до папки з сесіями браузера/акаунтів
+SESSION_DIR = "sessions"
+TOKENS_FILE = os.path.join(SESSION_DIR, "tokens.json")
 ARCHIVE_NAME = "discord_sessions.zip"
 
 def get_drive_service():
@@ -40,6 +41,25 @@ def get_drive_service():
     scopes = ["https://www.googleapis.com/auth/drive.file"]
     creds = service_account.Credentials.from_service_account_info(creds_json, scopes=scopes)
     return build("drive", "v3", credentials=creds)
+
+def save_tokens_locally():
+    if not os.path.exists(SESSION_DIR):
+        os.makedirs(SESSION_DIR)
+    with open(TOKENS_FILE, "w", encoding="utf-8") as f:
+        json.dump(ACCOUNTS, f, ensure_ascii=False, indent=4)
+
+def load_tokens_locally():
+    global ACCOUNTS
+    if os.path.exists(TOKENS_FILE):
+        try:
+            with open(TOKENS_FILE, "r", encoding="utf-8") as f:
+                saved_accounts = json.load(f)
+                for acc_id, data in saved_accounts.items():
+                    if acc_id in ACCOUNTS:
+                        ACCOUNTS[acc_id].update(data)
+            print("Дані акаунтів успішно відновлені з файлу!")
+        except Exception as e:
+            print(f"Помилка читання локальних токенів: {e}")
 
 def restore_sessions_from_drive():
     try:
@@ -55,7 +75,7 @@ def restore_sessions_from_drive():
         files = results.get("files", [])
 
         if not files:
-            print("Архів сесій на Google Диску не знайдено. Потрібен новий вхід.")
+            print("Архів на Google Диску не знайдено. Потрібен новий вхід.")
             return
 
         file_id = files[0]["id"]
@@ -70,6 +90,8 @@ def restore_sessions_from_drive():
         with zipfile.ZipFile(ARCHIVE_NAME, "r") as zip_ref:
             zip_ref.extractall(SESSION_DIR)
         os.remove(ARCHIVE_NAME)
+        
+        load_tokens_locally()
         print("Сесії успішно відновлені з Google Диска!")
     except Exception as e:
         print(f"Помилка при відновленні сесій: {e}")
@@ -78,6 +100,8 @@ def backup_sessions_to_drive():
     try:
         if not FOLDER_ID or not os.getenv("GOOGLE_SERVICE_ACCOUNT"):
             return
+
+        save_tokens_locally()
         if not os.path.exists(SESSION_DIR):
             return
 
@@ -165,7 +189,6 @@ async def handle_callback(request):
                 acc_email = ACCOUNTS[acc_id]["email"]
                 print(f"Успішно авторизовано: {acc_name} ({acc_email})", flush=True)
                 
-                # Зберігаємо оновлені сесії на Google Диск одразу після успішного входу
                 backup_sessions_to_drive()
                 
                 return web.Response(text=f"✅ Успішно! {acc_name} ({acc_email}) підключено до бота.")
@@ -346,7 +369,6 @@ async def auto_archive_task():
 async def on_ready():
     print(f'Бот {bot.user} активний!', flush=True)
     
-    # Відновлюємо збережені сесії з Google Диска перед запуском вебсервера і завдань
     restore_sessions_from_drive()
     
     bot.loop.create_task(start_web_server())
