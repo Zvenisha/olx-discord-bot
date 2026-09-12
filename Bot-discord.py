@@ -1,9 +1,14 @@
 import os
 import asyncio
+import json
+import zipfile
 from datetime import datetime, timezone, timedelta
 from aiohttp import web, ClientSession
 import discord
 from discord.ext import commands, tasks
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
 
 # --- НАЛАШТУВАННЯ КАНАЛІВ DISCORD ---
 NEW_ORDERS_CHANNEL_ID = 1546490061854351422
@@ -24,6 +29,87 @@ ACCOUNTS = {
 processed_message_ids = set()
 is_initialized = False
 advert_cache = {}
+
+# --- GOOGLE DRIVE СИНХРОНІЗАЦІЯ СЕСІЙ ---
+FOLDER_ID = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
+SESSION_DIR = "sessions"  # Шлях до папки з сесіями браузера/акаунтів
+ARCHIVE_NAME = "discord_sessions.zip"
+
+def get_drive_service():
+    creds_json = json.loads(os.getenv("GOOGLE_SERVICE_ACCOUNT"))
+    scopes = ["https://www.googleapis.com/auth/drive.file"]
+    creds = service_account.Credentials.from_service_account_info(creds_json, scopes=scopes)
+    return build("drive", "v3", credentials=creds)
+
+def restore_sessions_from_drive():
+    try:
+        if not FOLDER_ID or not os.getenv("GOOGLE_SERVICE_ACCOUNT"):
+            print("Змінні середовища для Google Drive не налаштовані.")
+            return
+        
+        drive = get_drive_service()
+        results = drive.files().list(
+            q=f"name='{ARCHIVE_NAME}' and '{FOLDER_ID}' in parents and trashed=false",
+            fields="files(id, name)"
+        ).execute()
+        files = results.get("files", [])
+
+        if not files:
+            print("Архів сесій на Google Диску не знайдено. Потрібен новий вхід.")
+            return
+
+        file_id = files[0]["id"]
+        request = drive.files().get_media(fileId=file_id)
+
+        with open(ARCHIVE_NAME, "wb") as f:
+            downloader = MediaIoBaseDownload(f, request)
+            done = False
+            while not done:
+                status, done = downloader.next_chunk()
+
+        with zipfile.ZipFile(ARCHIVE_NAME, "r") as zip_ref:
+            zip_ref.extractall(SESSION_DIR)
+        os.remove(ARCHIVE_NAME)
+        print("Сесії успішно відновлені з Google Диска!")
+    except Exception as e:
+        print(f"Помилка при відновленні сесій: {e}")
+
+def backup_sessions_to_drive():
+    try:
+        if not FOLDER_ID or not os.getenv("GOOGLE_SERVICE_ACCOUNT"):
+            return
+        if not os.path.exists(SESSION_DIR):
+            return
+
+        drive = get_drive_service()
+
+        with zipfile.ZipFile(ARCHIVE_NAME, "w", zipfile.ZIP_DEFLATED) as zip_ref:
+            for foldername, subfolders, filenames in os.walk(SESSION_DIR):
+                for filename in filenames:
+                    filepath = os.path.join(foldername, filename)
+                    arcname = os.path.relpath(filepath, SESSION_DIR)
+                    zip_ref.write(filepath, arcname)
+
+        results = drive.files().list(
+            q=f"name='{ARCHIVE_NAME}' and '{FOLDER_ID}' in parents and trashed=false",
+            fields="files(id, name)"
+        ).execute()
+        files = results.get("files", [])
+
+        media = MediaFileUpload(ARCHIVE_NAME, mimetype="application/zip")
+        file_metadata = {'name': ARCHIVE_NAME, 'parents': [FOLDER_ID]}
+
+        if files:
+            file_id = files[0]["id"]
+            drive.files().update(fileId=file_id, body=file_metadata, media_body=media).execute()
+            print("Архів сесій оновлено на Google Диску.")
+        else:
+            drive.files().create(body=file_metadata, media_body=media, fields='id').execute()
+            print("Архів сесій вперше завантажено на Google Диск.")
+
+        os.remove(ARCHIVE_NAME)
+    except Exception as e:
+        print(f"Помилка при збереженні на Диск: {e}")
 
 # --- 1. ВЕБ-СЕРВЕР ТА АВТОРИЗАЦІЯ ---
 async def handle_ping(request):
@@ -67,7 +153,6 @@ async def handle_callback(request):
                 ACCOUNTS[acc_id]["access_token"] = access_token
                 ACCOUNTS[acc_id]["refresh_token"] = data.get("refresh_token")
                 
-                # Автоматично робимо запит до профілю OLX, щоб дізнатися пошту акаунта
                 headers = {"Authorization": f"Bearer {access_token}", "Version": "2.0"}
                 async with session.get("https://www.olx.ua/api/partner/users/me", headers=headers) as user_resp:
                     if user_resp.status == 200:
@@ -79,6 +164,10 @@ async def handle_callback(request):
                 acc_name = ACCOUNTS[acc_id]["name"]
                 acc_email = ACCOUNTS[acc_id]["email"]
                 print(f"Успішно авторизовано: {acc_name} ({acc_email})", flush=True)
+                
+                # Зберігаємо оновлені сесії на Google Диск одразу після успішного входу
+                backup_sessions_to_drive()
+                
                 return web.Response(text=f"✅ Успішно! {acc_name} ({acc_email}) підключено до бота.")
             else:
                 print(f"Помилка авторизації для акка {acc_id}: {data}", flush=True)
@@ -100,7 +189,6 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix='!', intents=intents)
 
-# Команда для повного очищення каналу нових повідомлень (!del або !видалити)
 @bot.command(name='del', aliases=['видалити'])
 async def clear_new_orders(ctx):
     if ctx.channel.id == NEW_ORDERS_CHANNEL_ID:
@@ -206,7 +294,6 @@ async def olx_checker_task():
                             timestamp=datetime.now(timezone.utc)
                         )
                         
-                        # Автоматично підставляється пошта, отримана з API
                         account_info = f"**{acc_data['name']}**\n📧 `{acc_data['email']}`"
                         embed.add_field(name="🏪 Ваш акаунт", value=account_info, inline=False)
                         
@@ -230,7 +317,7 @@ async def olx_checker_task():
             is_initialized = True
             print("Бот ініціалізований та готовий до роботи.", flush=True)
 
-# --- 4. АВТО-АРХІВАЦІЯ ТА ОЧИЩЕННЯ (20 хвилин / 5 годин) ---
+# --- 4. АВТО-АРХІВАЦІЯ ТА ОЧИЩЕННЯ ---
 @tasks.loop(minutes=5)
 async def auto_archive_task():
     new_channel = bot.get_channel(NEW_ORDERS_CHANNEL_ID)
@@ -258,6 +345,10 @@ async def auto_archive_task():
 @bot.event
 async def on_ready():
     print(f'Бот {bot.user} активний!', flush=True)
+    
+    # Відновлюємо збережені сесії з Google Диска перед запуском вебсервера і завдань
+    restore_sessions_from_drive()
+    
     bot.loop.create_task(start_web_server())
     if not auto_archive_task.is_running():
         auto_archive_task.start()
