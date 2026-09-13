@@ -128,6 +128,38 @@ async def backup_sessions_to_drive():
     except Exception as e:
         print(f"ПОМИЛКА при збереженні на GitHub: {e}", flush=True)
 
+# --- АВТОМАТИЧНЕ ОНОВЛЕННЯ ТОКЕНА ---
+async def refresh_access_token(session, acc_id):
+    refresh_token = ACCOUNTS[acc_id].get("refresh_token")
+    if not refresh_token:
+        return False
+    
+    token_url = "https://www.olx.ua/api/open/oauth/token"
+    payload = {
+        "grant_type": "refresh_token",
+        "client_id": OLX_CLIENT_ID,
+        "client_secret": OLX_CLIENT_SECRET,
+        "refresh_token": refresh_token,
+        "scope": "read write v2"
+    }
+    try:
+        async with session.post(token_url, data=payload) as resp:
+            if resp.status == 200:
+                data = await resp.json()
+                if "access_token" in data:
+                    ACCOUNTS[acc_id]["access_token"] = data["access_token"]
+                    if "refresh_token" in data:
+                        ACCOUNTS[acc_id]["refresh_token"] = data["refresh_token"]
+                    print(f"Токен для {ACCOUNTS[acc_id]['name']} успішно оновлено через refresh_token!", flush=True)
+                    await backup_sessions_to_drive()
+                    return True
+            else:
+                err_text = await resp.text()
+                print(f"Не вдалося оновити токен для акка {acc_id} (Status {resp.status}): {err_text}", flush=True)
+    except Exception as e:
+        print(f"Помилка запиту оновлення токена для {acc_id}: {e}", flush=True)
+    return False
+
 # --- 1. ВЕБ-СЕРВЕР ТА АВТОРИЗАЦІЯ ---
 async def handle_ping(request):
     status_lines = [f"• {acc['name']} ({acc['email']}): {'🟢 Підключено' if acc['access_token'] else '⚪ Очікує входу'}" for acc in ACCOUNTS.values()]
@@ -230,9 +262,20 @@ async def olx_checker_task():
 
             try:
                 async with session.get("https://www.olx.ua/api/partner/threads", headers=headers) as resp:
-                    if resp.status != 200:
+                    if resp.status == 401:
+                        print(f"Токен для {acc_data['name']} прострочився (401), оновлюємо...", flush=True)
+                        if await refresh_access_token(session, acc_id):
+                            headers["Authorization"] = f"Bearer {ACCOUNTS[acc_id]['access_token']}"
+                            async with session.get("https://www.olx.ua/api/partner/threads", headers=headers) as retry_resp:
+                                if retry_resp.status != 200:
+                                    continue
+                                threads_data = await retry_resp.json()
+                        else:
+                            continue
+                    elif resp.status != 200:
                         continue
-                    threads_data = await resp.json()
+                    else:
+                        threads_data = await resp.json()
 
                 threads = threads_data.get("data", [])
                 for thread in threads:
