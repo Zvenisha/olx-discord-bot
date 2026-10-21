@@ -3,7 +3,7 @@ import asyncio
 import json
 import base64
 from datetime import datetime, timezone, timedelta
-from aiohttp import web, ClientSession
+from aiohttp import web, ClientSession, ClientTimeout
 import discord
 from discord.ext import commands, tasks
 
@@ -16,7 +16,7 @@ OLX_CLIENT_ID = os.getenv("OLX_CLIENT_ID", "203013")
 OLX_CLIENT_SECRET = os.getenv("OLX_CLIENT_SECRET", "SPqxrdxWxZBErpr4BKC31TudsW2Zhp2yNTqnkriF6OSTEXaR")
 REDIRECT_URI = "https://olx-discord-bot-ppys.onrender.com/callback"
 
-# Пошти тепер підтягуються автоматично, тут залишаються лише назви магазинів
+# Пошти підтягуються автоматично, тут залишаються лише назви магазинів
 ACCOUNTS = {
     "1": {"name": "Магазин 1", "email": "Очікує входу...", "access_token": None, "refresh_token": None},
     "2": {"name": "Магазин 2", "email": "Очікує входу...", "access_token": None, "refresh_token": None},
@@ -26,6 +26,8 @@ ACCOUNTS = {
 processed_message_ids = set()
 is_initialized = False
 advert_cache = {}
+thread_state_cache = {}  # Кеш стану діалогів: {thread_id: (total_count, unread_count)}
+http_session: ClientSession = None  # Єдина сесія для економії трафіку на рукостисканнях
 
 # --- GITHUB СИНХРОНІЗАЦІЯ ТОКЕНІВ ---
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
@@ -33,6 +35,16 @@ GITHUB_REPO = os.getenv("GITHUB_REPO")  # Наприклад: "Zvenisha/olx-disc
 FILE_PATH = "sessions/tokens.json"
 SESSION_DIR = "sessions"
 TOKENS_FILE = os.path.join(SESSION_DIR, "tokens.json")
+
+async def get_http_session() -> ClientSession:
+    global http_session
+    if http_session is None or http_session.closed:
+        timeout = ClientTimeout(total=30)
+        http_session = ClientSession(
+            timeout=timeout,
+            headers={"Accept-Encoding": "gzip, deflate"}
+        )
+    return http_session
 
 def save_tokens_locally():
     if not os.path.exists(SESSION_DIR):
@@ -65,22 +77,22 @@ async def restore_sessions_from_drive():
             "Accept": "application/vnd.github+json"
         }
 
-        async with ClientSession() as session:
-            async with session.get(url, headers=headers) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    content_base64 = data.get("content", "")
-                    content_bytes = base64.b64decode(content_base64)
+        session = await get_http_session()
+        async with session.get(url, headers=headers) as resp:
+            if resp.status == 200:
+                data = await resp.json()
+                content_base64 = data.get("content", "")
+                content_bytes = base64.b64decode(content_base64)
 
-                    if not os.path.exists(SESSION_DIR):
-                        os.makedirs(SESSION_DIR)
-                    with open(TOKENS_FILE, "wb") as f:
-                        f.write(content_bytes)
+                if not os.path.exists(SESSION_DIR):
+                    os.makedirs(SESSION_DIR)
+                with open(TOKENS_FILE, "wb") as f:
+                    f.write(content_bytes)
 
-                    load_tokens_locally()
-                    print("Токени успішно відновлені з GitHub репозиторію!", flush=True)
-                else:
-                    print("Файл токенів на GitHub ще не створено. Потрібен новий вхід.", flush=True)
+                load_tokens_locally()
+                print("Токени успішно відновлені з GitHub репозиторію!", flush=True)
+            else:
+                print("Файл токенів на GitHub ще не створено. Потрібен новий вхід.", flush=True)
     except Exception as e:
         print(f"Помилка при відновленні з GitHub: {e}", flush=True)
 
@@ -105,26 +117,26 @@ async def backup_sessions_to_drive():
             "Accept": "application/vnd.github+json"
         }
 
-        async with ClientSession() as session:
-            sha = None
-            async with session.get(url, headers=headers) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    sha = data.get("sha")
+        session = await get_http_session()
+        sha = None
+        async with session.get(url, headers=headers) as resp:
+            if resp.status == 200:
+                data = await resp.json()
+                sha = data.get("sha")
 
-            payload = {
-                "message": "Update tokens.json automatically",
-                "content": encoded_content
-            }
-            if sha:
-                payload["sha"] = sha
+        payload = {
+            "message": "Update tokens.json automatically",
+            "content": encoded_content
+        }
+        if sha:
+            payload["sha"] = sha
 
-            async with session.put(url, headers=headers, json=payload) as put_resp:
-                if put_resp.status in [200, 201]:
-                    print("Токени успішно збережені на GitHub!", flush=True)
-                else:
-                    err_text = await put_resp.text()
-                    print(f"Помилка збереження токенів на GitHub: {err_text}", flush=True)
+        async with session.put(url, headers=headers, json=payload) as put_resp:
+            if put_resp.status in [200, 201]:
+                print("Токени успішно збережені на GitHub!", flush=True)
+            else:
+                err_text = await put_resp.text()
+                print(f"Помилка збереження токенів на GitHub: {err_text}", flush=True)
     except Exception as e:
         print(f"ПОМИЛКА при збереженні на GitHub: {e}", flush=True)
 
@@ -194,32 +206,32 @@ async def handle_callback(request):
         "redirect_uri": REDIRECT_URI
     }
 
-    async with ClientSession() as session:
-        async with session.post(token_url, json=payload) as resp:
-            data = await resp.json()
-            if "access_token" in data and acc_id in ACCOUNTS:
-                access_token = data["access_token"]
-                ACCOUNTS[acc_id]["access_token"] = access_token
-                ACCOUNTS[acc_id]["refresh_token"] = data.get("refresh_token")
-                
-                headers = {"Authorization": f"Bearer {access_token}", "Version": "2.0"}
-                async with session.get("https://www.olx.ua/api/partner/users/me", headers=headers) as user_resp:
-                    if user_resp.status == 200:
-                        user_data = await user_resp.json()
-                        email = user_data.get("data", {}).get("email")
-                        if email:
-                            ACCOUNTS[acc_id]["email"] = email
+    session = await get_http_session()
+    async with session.post(token_url, json=payload) as resp:
+        data = await resp.json()
+        if "access_token" in data and acc_id in ACCOUNTS:
+            access_token = data["access_token"]
+            ACCOUNTS[acc_id]["access_token"] = access_token
+            ACCOUNTS[acc_id]["refresh_token"] = data.get("refresh_token")
+            
+            headers = {"Authorization": f"Bearer {access_token}", "Version": "2.0"}
+            async with session.get("https://www.olx.ua/api/partner/users/me", headers=headers) as user_resp:
+                if user_resp.status == 200:
+                    user_data = await user_resp.json()
+                    email = user_data.get("data", {}).get("email")
+                    if email:
+                        ACCOUNTS[acc_id]["email"] = email
 
-                acc_name = ACCOUNTS[acc_id]["name"]
-                acc_email = ACCOUNTS[acc_id]["email"]
-                print(f"Успішно авторизовано: {acc_name} ({acc_email})", flush=True)
-                
-                await backup_sessions_to_drive()
-                
-                return web.Response(text=f"✅ Успішно! {acc_name} ({acc_email}) підключено до бота.")
-            else:
-                print(f"Помилка авторизації для акка {acc_id}: {data}", flush=True)
-                return web.Response(text=f"Помилка авторизації: {data}", status=400)
+            acc_name = ACCOUNTS[acc_id]["name"]
+            acc_email = ACCOUNTS[acc_id]["email"]
+            print(f"Успішно авторизовано: {acc_name} ({acc_email})", flush=True)
+            
+            await backup_sessions_to_drive()
+            
+            return web.Response(text=f"✅ Успішно! {acc_name} ({acc_email}) підключено до бота.")
+        else:
+            print(f"Помилка авторизації для акка {acc_id}: {data}", flush=True)
+            return web.Response(text=f"Помилка авторизації: {data}", status=400)
 
 async def start_web_server():
     app = web.Application()
@@ -245,139 +257,152 @@ async def clear_new_orders(ctx):
     else:
         await ctx.send("Цю команду можна використовувати лише в каналі нових замовлень!", delete_after=3)
 
-# --- 3. ОПИТУВАННЯ АКАУНТІВ ---
-@tasks.loop(seconds=30)
+# --- 3. ОПИТУВАННЯ АКАУНТІВ (ЗБАЛАНСОВАНЕ) ---
+@tasks.loop(seconds=40)
 async def olx_checker_task():
     global is_initialized
-    async with ClientSession() as session:
-        for acc_id, acc_data in ACCOUNTS.items():
-            token = acc_data.get("access_token")
-            if not token:
-                continue
+    session = await get_http_session()
 
-            headers = {
-                "Authorization": f"Bearer {token}",
-                "Version": "2.0"
-            }
+    for acc_id, acc_data in ACCOUNTS.items():
+        token = acc_data.get("access_token")
+        if not token:
+            continue
 
-            try:
-                async with session.get("https://www.olx.ua/api/partner/threads", headers=headers) as resp:
-                    if resp.status == 401:
-                        print(f"Токен для {acc_data['name']} прострочився (401), оновлюємо...", flush=True)
-                        if await refresh_access_token(session, acc_id):
-                            headers["Authorization"] = f"Bearer {ACCOUNTS[acc_id]['access_token']}"
-                            async with session.get("https://www.olx.ua/api/partner/threads", headers=headers) as retry_resp:
-                                if retry_resp.status != 200:
-                                    continue
-                                threads_data = await retry_resp.json()
-                        else:
-                            continue
-                    elif resp.status != 200:
-                        continue
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Version": "2.0"
+        }
+
+        try:
+            # Беремо останні 15 діалогів (цього більш ніж достатньо для 40-секундного інтервалу)
+            threads_url = "https://www.olx.ua/api/partner/threads?limit=15"
+            async with session.get(threads_url, headers=headers) as resp:
+                if resp.status == 401:
+                    print(f"Токен для {acc_data['name']} прострочився (401), оновлюємо...", flush=True)
+                    if await refresh_access_token(session, acc_id):
+                        headers["Authorization"] = f"Bearer {ACCOUNTS[acc_id]['access_token']}"
+                        async with session.get(threads_url, headers=headers) as retry_resp:
+                            if retry_resp.status != 200:
+                                continue
+                            threads_data = await retry_resp.json()
                     else:
-                        threads_data = await resp.json()
-
-                threads = threads_data.get("data", [])
-                for thread in threads:
-                    thread_id = thread.get("id")
-                    advert_id = thread.get("advert_id")
-
-                    ad_title = "Оголошення OLX"
-                    ad_image_url = None
-                    ad_url = f"https://www.olx.ua/d/obyavlenie/-ID{advert_id}.html" if advert_id else "https://www.olx.ua/"
-
-                    if advert_id:
-                        if advert_id in advert_cache:
-                            ad_title, ad_image_url, ad_url = advert_cache[advert_id]
-                        else:
-                            async with session.get(f"https://www.olx.ua/api/partner/adverts/{advert_id}", headers=headers) as ad_resp:
-                                if ad_resp.status == 200:
-                                    ad_json = await ad_resp.json()
-                                    ad_data = ad_json.get("data", {})
-                                    
-                                    ad_title = ad_data.get("title", "Оголошення OLX")
-                                    api_url = ad_data.get("url")
-                                    if api_url:
-                                        ad_url = api_url
-                                    
-                                    images = ad_data.get("images", [])
-                                    if images and isinstance(images, list):
-                                        first_img = images[0]
-                                        if isinstance(first_img, dict):
-                                            ad_image_url = first_img.get("url")
-                                    
-                                    advert_cache[advert_id] = (ad_title, ad_image_url, ad_url)
-
-                    async with session.get(f"https://www.olx.ua/api/partner/threads/{thread_id}/messages", headers=headers) as msg_resp:
-                        if msg_resp.status != 200:
-                            continue
-                        messages_data = await msg_resp.json()
-
-                    messages = messages_data.get("data", [])
-                    if not messages:
                         continue
+                elif resp.status != 200:
+                    continue
+                else:
+                    threads_data = await resp.json()
 
-                    last_msg = messages[-1]
-                    msg_id = last_msg.get("id")
-                    msg_type = last_msg.get("type", "")
-                    msg_time = last_msg.get("created_at", "Невідомо")
+            threads = threads_data.get("data", [])
+            for thread in threads:
+                thread_id = thread.get("id")
+                advert_id = thread.get("advert_id")
+                total_count = thread.get("total_count", 0)
+                unread_count = thread.get("unread_count", 0)
 
-                    if not is_initialized:
-                        processed_message_ids.add(msg_id)
+                current_state = (total_count, unread_count)
+
+                # ГОЛОВНА ЕКОНОМІЯ ТРАФІКУ:
+                # Якщо бот вже запущений і в цьому чаті кількість повідомлень не змінилася
+                # і немає непрочитаних — ми НЕ робимо зайвий запит /messages
+                if is_initialized and thread_state_cache.get(thread_id) == current_state and unread_count == 0:
+                    continue
+
+                # Запитуємо лише останні 5 повідомлень гілки замість усієї історії
+                async with session.get(f"https://www.olx.ua/api/partner/threads/{thread_id}/messages?limit=5", headers=headers) as msg_resp:
+                    if msg_resp.status != 200:
                         continue
+                    messages_data = await msg_resp.json()
 
-                    if msg_type != "received":
-                        processed_message_ids.add(msg_id)
-                        continue
+                # Оновлюємо кеш стану діалогу тільки після успішного отримання повідомлень
+                thread_state_cache[thread_id] = current_state
 
-                    if msg_id in processed_message_ids:
-                        continue
+                messages = messages_data.get("data", [])
+                if not messages:
+                    continue
 
+                last_msg = messages[-1]
+                msg_id = last_msg.get("id")
+                msg_type = last_msg.get("type", "")
+                msg_time = last_msg.get("created_at", "Невідомо")
+
+                if not is_initialized:
                     processed_message_ids.add(msg_id)
-                    msg_text = last_msg.get("text", "")
+                    continue
 
-                    triggers = [
-                        "замов", "оплат", "відправ", "наявн", "ціна",
-                        "картк", "реквізит", "наложк", "післяплат",
-                        "пошт", "доставк", "актуальн", "знижк"
-                    ]
-                    found_trigger = next((w for w in triggers if w in msg_text.lower()), None)
+                if msg_type != "received" or msg_id in processed_message_ids:
+                    processed_message_ids.add(msg_id)
+                    continue
 
-                    new_channel = bot.get_channel(NEW_ORDERS_CHANNEL_ID)
-                    if new_channel:
-                        embed = discord.Embed(
-                            title=f"📦 {ad_title}",
-                            url=ad_url,
-                            description="Отримано нове вхідне звернення від клієнта.",
-                            color=0x00FF00 if found_trigger else 0x3498db,
-                            timestamp=datetime.now(timezone.utc)
-                        )
-                        
-                        account_info = f"**{acc_data['name']}**\n📧 `{acc_data['email']}`"
-                        embed.add_field(name="🏪 Ваш акаунт", value=account_info, inline=False)
-                        
-                        embed.add_field(name="⏱️ Час на OLX", value=msg_time, inline=True)
+                processed_message_ids.add(msg_id)
+                msg_text = last_msg.get("text", "")
 
-                        if ad_image_url:
-                            embed.set_image(url=ad_image_url)
+                # Запитуємо деталі оголошення ТІЛЬКИ тоді, коли реально прийшло нове повідомлення
+                ad_title = "Оголошення OLX"
+                ad_image_url = None
+                ad_url = f"https://www.olx.ua/d/obyavlenie/-ID{advert_id}.html" if advert_id else "https://www.olx.ua/"
 
-                        if found_trigger:
-                            embed.add_field(name="⚠️ Увага (Тригер)", value=f"Спрацювало на: *{found_trigger}*", inline=False)
-                        
-                        embed.add_field(name="👤 Написав клієнт", value=f"> {msg_text}", inline=False)
-                            
-                        embed.set_footer(text="OLX Manager Bot")
-                        await new_channel.send(embed=embed)
+                if advert_id:
+                    if advert_id in advert_cache:
+                        ad_title, ad_image_url, ad_url = advert_cache[advert_id]
+                    else:
+                        async with session.get(f"https://www.olx.ua/api/partner/adverts/{advert_id}", headers=headers) as ad_resp:
+                            if ad_resp.status == 200:
+                                ad_json = await ad_resp.json()
+                                ad_data = ad_json.get("data", {})
+                                
+                                ad_title = ad_data.get("title", "Оголошення OLX")
+                                api_url = ad_data.get("url")
+                                if api_url:
+                                    ad_url = api_url
+                                
+                                images = ad_data.get("images", [])
+                                if images and isinstance(images, list):
+                                    first_img = images[0]
+                                    if isinstance(first_img, dict):
+                                        ad_image_url = first_img.get("url")
+                                
+                                advert_cache[advert_id] = (ad_title, ad_image_url, ad_url)
 
-            except Exception as e:
-                print(f"Помилка опитування для {acc_data['name']}: {e}", flush=True)
+                triggers = [
+                    "замов", "оплат", "відправ", "наявн", "ціна",
+                    "картк", "реквізит", "наложк", "післяплат",
+                    "пошт", "доставк", "актуальн", "знижк"
+                ]
+                found_trigger = next((w for w in triggers if w in msg_text.lower()), None)
 
-        if not is_initialized:
-            is_initialized = True
-            print("Бот ініціалізований та готовий до роботи.", flush=True)
+                new_channel = bot.get_channel(NEW_ORDERS_CHANNEL_ID)
+                if new_channel:
+                    embed = discord.Embed(
+                        title=f"📦 {ad_title}",
+                        url=ad_url,
+                        description="Отримано нове вхідне звернення від клієнта.",
+                        color=0x00FF00 if found_trigger else 0x3498db,
+                        timestamp=datetime.now(timezone.utc)
+                    )
+                    
+                    account_info = f"**{acc_data['name']}**\n📧 `{acc_data['email']}`"
+                    embed.add_field(name="🏪 Ваш акаунт", value=account_info, inline=False)
+                    embed.add_field(name="⏱️ Час на OLX", value=msg_time, inline=True)
+
+                    if ad_image_url:
+                        embed.set_image(url=ad_image_url)
+
+                    if found_trigger:
+                        embed.add_field(name="⚠️ Увага (Тригер)", value=f"Спрацювало на: *{found_trigger}*", inline=False)
+                    
+                    embed.add_field(name="👤 Написав клієнт", value=f"> {msg_text}", inline=False)
+                    embed.set_footer(text="OLX Manager Bot")
+                    await new_channel.send(embed=embed)
+
+        except Exception as e:
+            print(f"Помилка опитування для {acc_data['name']}: {e}", flush=True)
+
+    if not is_initialized:
+        is_initialized = True
+        print("Бот ініціалізований та готовий до роботи.", flush=True)
 
 # --- 4. АВТО-АРХІВАЦІЯ ТА ОЧИЩЕННЯ ---
-@tasks.loop(minutes=5)
+@tasks.loop(minutes=10)
 async def auto_archive_task():
     new_channel = bot.get_channel(NEW_ORDERS_CHANNEL_ID)
     archive_channel = bot.get_channel(ARCHIVE_CHANNEL_ID)
@@ -387,7 +412,7 @@ async def auto_archive_task():
     cutoff_archive = datetime.now(timezone.utc) - timedelta(minutes=20)
     cutoff_delete = datetime.now(timezone.utc) - timedelta(hours=5)
 
-    async for message in new_channel.history(limit=100):
+    async for message in new_channel.history(limit=35):
         if message.author == bot.user and message.created_at < cutoff_archive:
             if message.embeds:
                 await archive_channel.send(
@@ -396,21 +421,11 @@ async def auto_archive_task():
                 )
             await message.delete()
 
-    async for message in archive_channel.history(limit=100):
+    async for message in archive_channel.history(limit=35):
         if message.author == bot.user and message.created_at < cutoff_delete:
             await message.delete()
 
 # --- 5. ЗАПУСК ---
 @bot.event
 async def on_ready():
-    print(f'Бот {bot.user} активний!', flush=True)
-    
-    await restore_sessions_from_drive()
-    
-    bot.loop.create_task(start_web_server())
-    if not auto_archive_task.is_running():
-        auto_archive_task.start()
-    if not olx_checker_task.is_running():
-        olx_checker_task.start()
-
-bot.run(os.getenv('DISOURCE_TOKEN') or os.getenv('DISCORD_TOKEN'))
+    print(f'Бот {bot.user
