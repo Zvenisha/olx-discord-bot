@@ -16,7 +16,6 @@ OLX_CLIENT_ID = os.getenv("OLX_CLIENT_ID", "203013")
 OLX_CLIENT_SECRET = os.getenv("OLX_CLIENT_SECRET", "SPqxrdxWxZBErpr4BKC31TudsW2Zhp2yNTqnkriF6OSTEXaR")
 REDIRECT_URI = "https://olx-discord-bot-ppys.onrender.com/callback"
 
-# Пошти підтягуються автоматично, тут залишаються лише назви магазинів
 ACCOUNTS = {
     "1": {"name": "Магазин 1", "email": "Очікує входу...", "access_token": None, "refresh_token": None},
     "2": {"name": "Магазин 2", "email": "Очікує входу...", "access_token": None, "refresh_token": None},
@@ -26,12 +25,12 @@ ACCOUNTS = {
 processed_message_ids = set()
 is_initialized = False
 advert_cache = {}
-thread_state_cache = {}  # Кеш стану діалогів: {thread_id: (total_count, unread_count)}
-http_session: ClientSession = None  # Єдина сесія для економії трафіку на рукостисканнях
+thread_state_cache = {}
+http_session: ClientSession = None
 
 # --- GITHUB СИНХРОНІЗАЦІЯ ТОКЕНІВ ---
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
-GITHUB_REPO = os.getenv("GITHUB_REPO")  # Наприклад: "Zvenisha/olx-discord-bot"
+GITHUB_REPO = os.getenv("GITHUB_REPO")
 FILE_PATH = "sessions/tokens.json"
 SESSION_DIR = "sessions"
 TOKENS_FILE = os.path.join(SESSION_DIR, "tokens.json")
@@ -140,7 +139,6 @@ async def backup_sessions_to_drive():
     except Exception as e:
         print(f"ПОМИЛКА при збереженні на GitHub: {e}", flush=True)
 
-# --- АВТОМАТИЧНЕ ОНОВЛЕННЯ ТОКЕНА ---
 async def refresh_access_token(session, acc_id):
     refresh_token = ACCOUNTS[acc_id].get("refresh_token")
     if not refresh_token:
@@ -172,7 +170,6 @@ async def refresh_access_token(session, acc_id):
         print(f"Помилка запиту оновлення токена для {acc_id}: {e}", flush=True)
     return False
 
-# --- 1. ВЕБ-СЕРВЕР ТА АВТОРИЗАЦІЯ ---
 async def handle_ping(request):
     status_lines = [f"• {acc['name']} ({acc['email']}): {'🟢 Підключено' if acc['access_token'] else '⚪ Очікує входу'}" for acc in ACCOUNTS.values()]
     return web.Response(text="OLX Discord Bot is online!\n\nСтатус підключення акаунтів:\n" + "\n".join(status_lines))
@@ -244,7 +241,6 @@ async def start_web_server():
     await site.start()
     print("Веб-сервер активний на порту 8080.", flush=True)
 
-# --- 2. DISCORD БОТ ---
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix='!', intents=intents)
@@ -257,7 +253,6 @@ async def clear_new_orders(ctx):
     else:
         await ctx.send("Цю команду можна використовувати лише в каналі нових замовлень!", delete_after=3)
 
-# --- 3. ОПИТУВАННЯ АКАУНТІВ (ЗБАЛАНСОВАНЕ) ---
 @tasks.loop(seconds=40)
 async def olx_checker_task():
     global is_initialized
@@ -274,7 +269,6 @@ async def olx_checker_task():
         }
 
         try:
-            # Беремо останні 15 діалогів (цього більш ніж достатньо для 40-секундного інтервалу)
             threads_url = "https://www.olx.ua/api/partner/threads?limit=15"
             async with session.get(threads_url, headers=headers) as resp:
                 if resp.status == 401:
@@ -301,19 +295,14 @@ async def olx_checker_task():
 
                 current_state = (total_count, unread_count)
 
-                # ГОЛОВНА ЕКОНОМІЯ ТРАФІКУ:
-                # Якщо бот вже запущений і в цьому чаті кількість повідомлень не змінилася
-                # і немає непрочитаних — ми НЕ робимо зайвий запит /messages
                 if is_initialized and thread_state_cache.get(thread_id) == current_state and unread_count == 0:
                     continue
 
-                # Запитуємо лише останні 5 повідомлень гілки замість усієї історії
                 async with session.get(f"https://www.olx.ua/api/partner/threads/{thread_id}/messages?limit=5", headers=headers) as msg_resp:
                     if msg_resp.status != 200:
                         continue
                     messages_data = await msg_resp.json()
 
-                # Оновлюємо кеш стану діалогу тільки після успішного отримання повідомлень
                 thread_state_cache[thread_id] = current_state
 
                 messages = messages_data.get("data", [])
@@ -336,7 +325,6 @@ async def olx_checker_task():
                 processed_message_ids.add(msg_id)
                 msg_text = last_msg.get("text", "")
 
-                # Запитуємо деталі оголошення ТІЛЬКИ тоді, коли реально прийшло нове повідомлення
                 ad_title = "Оголошення OLX"
                 ad_image_url = None
                 ad_url = f"https://www.olx.ua/d/obyavlenie/-ID{advert_id}.html" if advert_id else "https://www.olx.ua/"
@@ -401,7 +389,6 @@ async def olx_checker_task():
         is_initialized = True
         print("Бот ініціалізований та готовий до роботи.", flush=True)
 
-# --- 4. АВТО-АРХІВАЦІЯ ТА ОЧИЩЕННЯ ---
 @tasks.loop(minutes=10)
 async def auto_archive_task():
     new_channel = bot.get_channel(NEW_ORDERS_CHANNEL_ID)
@@ -425,7 +412,16 @@ async def auto_archive_task():
         if message.author == bot.user and message.created_at < cutoff_delete:
             await message.delete()
 
-# --- 5. ЗАПУСК ---
 @bot.event
 async def on_ready():
-    print(f'Бот {bot.user
+    print(f"Бот {bot.user} активний!", flush=True)
+    
+    await restore_sessions_from_drive()
+    
+    bot.loop.create_task(start_web_server())
+    if not auto_archive_task.is_running():
+        auto_archive_task.start()
+    if not olx_checker_task.is_running():
+        olx_checker_task.start()
+
+bot.run(os.getenv("DISOURCE_TOKEN") or os.getenv("DISCORD_TOKEN"))
